@@ -37,7 +37,14 @@ jobs:
           git add data docs
           if git diff --cached --quiet; then
             echo "No changes to commit."
-          else
-            git commit -m "chore: daily lunch suggestion [skip ci]"
-            git push
+            exit 0
           fi
+          git commit -m "chore: daily lunch suggestion [skip ci]"
+          # Rebase-and-retry: another run (or Pages) may have advanced main.
+          for i in 1 2 3 4 5; do
+            if git push; then echo "pushed"; exit 0; fi
+            echo "push rejected; rebasing (attempt $i)"
+            git pull --rebase --autostash origin main || true
+            sleep $((RANDOM % 5 + 2))
+          done
+          echo "push failed after retries"; exit 1
