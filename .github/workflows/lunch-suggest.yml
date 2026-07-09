@@ -1,9 +1,9 @@
 name: lunch-suggest
 
-# Daily late-morning lunch suggestion near 1 Depot Rd, informed by recent meals.
+# Weekday late-morning lunch suggestion near 1 Depot Rd, informed by recent meals.
 on:
   schedule:
-    - cron: "45 2 * * *" # 02:45 UTC = 10:45 SGT
+    - cron: "50 3 * * 1-5" # 03:50 UTC = 11:50 SGT, Mon-Fri
   workflow_dispatch: {}
 
 concurrency:

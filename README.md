@@ -8,8 +8,10 @@ text-in/text-out function*), different job.
 - **Log meals over Telegram.** Text the bot what you ate ("chicken rice and kopi"). It
   estimates the calories, logs it immediately, and tells you the running total. Reply to
   correct it ("make it 700", "remove that").
-- **Daily lunch suggestion.** Each late morning it looks at your last few days of meals,
-  searches eateries near the office (Google Places), and suggests one healthy-ish option.
+- **Log any meal, any time.** Breakfast, lunch, dinner, or a snack — text it and it's logged
+  toward your daily total. Give your own calorie count and it uses that; otherwise it estimates.
+- **Weekday lunch suggestion.** Each weekday (Mon–Fri, 11:50 SGT) it looks at your last few
+  days of meals, searches eateries near the office (Google Places), and suggests one option.
 - **Published to GitHub Pages.** A daily calorie dashboard + recent lunch picks, rendered to
   `docs/index.html`.
 
@@ -26,7 +28,7 @@ you ──Telegram──▶ poll.yml (every ~15m) ──▶ harness.py --poll �
                                                    │
                                           git commit + push (state + Pages)
 
-cron 10:45 SGT ──▶ lunch-suggest.yml ──▶ harness.py --suggest
+cron Mon-Fri 11:50 SGT ──▶ lunch-suggest.yml ──▶ harness.py --suggest
                        read_food_log → search_places → pick → send_telegram
 ```
 
@@ -41,7 +43,7 @@ cron 10:45 SGT ──▶ lunch-suggest.yml ──▶ harness.py --suggest
 | `data/tg_offset.json` | Last processed Telegram `update_id`. |
 | `docs/index.html` | Generated GitHub Pages dashboard. |
 | `.github/workflows/poll.yml` | Every ~15 min: drain Telegram, log, rebuild, commit. |
-| `.github/workflows/lunch-suggest.yml` | Daily 10:45 SGT lunch suggestion. |
+| `.github/workflows/lunch-suggest.yml` | Weekday (Mon–Fri) 11:50 SGT lunch suggestion. |
 
 ## Setup
 
