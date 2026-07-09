@@ -669,19 +669,29 @@ SUGGEST_PROMPT = (
 )
 
 
+def _last_telegram_text(messages):
+    """Pull the message text from the last send_telegram tool call, if any."""
+    for m in reversed(messages):
+        for tc in m.get("tool_calls") or []:
+            if tc["function"]["name"] == "send_telegram":
+                try:
+                    return json.loads(tc["function"].get("arguments") or "{}").get("message", "")
+                except json.JSONDecodeError:
+                    return ""
+    return ""
+
+
 def suggest():
     messages = [_system_message()]
     reply = converse(messages, SUGGEST_PROMPT)
-    # Record the suggestion for the Pages log. Try to extract a short pick line.
-    pick = (reply or "").strip().split("\n")[0][:200] if reply else "(sent via tool)"
+    # Record the actual suggestion for the Pages log — prefer the text the model
+    # sent via send_telegram over its final meta-reply ("Sent! Check Telegram...").
+    pick = _last_telegram_text(messages) or (reply or "").strip()
+    pick = pick.replace("\n", " ").strip()[:280] or "(sent via tool)"
     suggestions = _read_json(SUGGESTIONS, [])
     suggestions.append({"date": _today_sgt(), "pick": pick, "reason": ""})
     _write_json(SUGGESTIONS, suggestions)
-    if reply:
-        # converse may already have sent via tool; only send here if it returned
-        # plain text and didn't call send_telegram. We keep it simple and rely on
-        # the system prompt telling the model to use send_telegram.
-        print(reply)
+    print(pick)
     render_dashboard()
     print("Suggestion recorded.")
 
