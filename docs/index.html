@@ -110,7 +110,13 @@
   .hero-cta{display:flex;flex-wrap:wrap;gap:14px;margin-top:30px}
 
   /* ---------- phone / chat ---------- */
-  .phone{justify-self:center;width:100%;max-width:372px;background:var(--paper);border:4px solid var(--ink);border-radius:28px;box-shadow:var(--hard);padding:14px}
+  .phone-wrap{justify-self:center;position:relative;width:100%;max-width:372px}
+  .sticker{position:absolute;top:-38px;right:-26px;z-index:5;width:122px;height:122px;border-radius:50%;
+    background:repeating-conic-gradient(var(--sponge) 0 15deg, var(--sponge-2) 15deg 30deg);
+    border:3px solid var(--ink);box-shadow:var(--hard-sm);display:grid;place-items:center;transform:rotate(12deg)}
+  .sticker span{font-family:"Permanent Marker",cursive;color:var(--krabs);font-size:1rem;line-height:1.02;text-align:center;text-shadow:1px 1px 0 rgba(255,255,255,.65)}
+  @media (max-width:920px){ .sticker{width:104px;height:104px;top:-30px;right:-6px} .sticker span{font-size:.9rem} }
+  .phone{width:100%;background:var(--paper);border:4px solid var(--ink);border-radius:28px;box-shadow:var(--hard);padding:14px}
   .phone-head{display:flex;align-items:center;gap:11px;padding:4px 4px 13px;border-bottom:3px solid var(--ink)}
   .porthole{width:44px;height:44px;border-radius:50%;background:var(--ocean);border:3px solid var(--ink);display:grid;place-items:center;font-size:1.2rem;box-shadow:inset 0 0 0 3px rgba(255,255,255,.5)}
   .phone-head .who{font-family:"Titan One",cursive;font-size:1rem;line-height:1.1}
@@ -345,6 +351,8 @@
           </div>
         </div>
 
+        <div class="phone-wrap">
+        <div class="sticker" aria-hidden="true"><span>Ahh…<br>lunchtime!</span></div>
         <div class="phone" aria-label="Example Telegram conversation with the bot">
           <div class="phone-head">
             <div class="porthole">🍔</div>
@@ -362,6 +370,7 @@
             <div class="msg bot">Today’s special: <b>AMGD Superfood</b> at Enabling Village (~8 min walk). A protein grain bowl runs ~600 kcal — leaves room for dinner.<small>You didn’t ask — it just shows up. Tap ✅ Ate it to log it.</small></div>
           </div>
         </div>
+        </div>
       </div>
     </div>
 
@@ -372,11 +381,13 @@
         <span>NO SERVER TO <em>BABYSIT</em></span>
         <span>THE AI JUST <em>TURNS TEXT INTO TEXT</em></span>
         <span>NO APP · NO ACCOUNT · <em>JUST A CHAT</em></span>
+        <span>🎺 IS MAYONNAISE <em>AN INSTRUMENT?</em></span>
         <span>ORDER UP! · <em>TODAY’S SPECIAL SERVED 11:50 SGT</em></span>
         <span>DAILY TARGET <em>1,700 KCAL</em></span>
         <span>NO SERVER TO <em>BABYSIT</em></span>
         <span>THE AI JUST <em>TURNS TEXT INTO TEXT</em></span>
         <span>NO APP · NO ACCOUNT · <em>JUST A CHAT</em></span>
+        <span>🎺 IS MAYONNAISE <em>AN INSTRUMENT?</em></span>
       </div>
     </div>
   </section>
@@ -419,7 +430,7 @@
             <div class="rrow"><span><em>13:05</em>chicken rice</span><span>600</span></div>
             <div class="rrow"><span><em>16:20</em>protein bar</span><span>100</span></div>
           </div>
-          <div class="rfoot">★ save room for a Krabby Patty ★</div>
+          <div class="rfoot">★ save room for a Krabby Patty · Mr. Krabs approves 🦀 ★</div>
         </div>
         <div class="chartbox">
           <div class="cap">This week’s catch — added up automatically</div>
@@ -545,6 +556,7 @@
       <div class="block formula">
         <p class="kicker">The secret formula</p>
         <blockquote>There’s no secret formula. The AI just turns text into text — everything useful is <span class="hl">plain plumbing</span> around it.</blockquote>
+        <p class="marker" style="color:var(--sponge);margin:14px 0 0;transform:rotate(-1deg);font-size:1.05rem">(Sorry, Plankton.)</p>
         <div class="cols">
           <div>
             <h4>The idea</h4>
@@ -591,6 +603,7 @@
       <svg viewBox="0 0 1200 60" preserveAspectRatio="none" width="100%" height="60"><path d="M0,30 C150,60 350,0 600,28 C850,56 1050,6 1200,30 L1200,60 L0,60 Z" fill="#0a3340"></path></svg>
     </div>
     <div class="wrap reveal">
+      <p class="kicker" style="color:var(--sponge)">I’m ready! I’m ready!</p>
       <h2>See today’s tally, live.</h2>
       <p>The dashboard redraws itself every time a meal is logged. The code is one file, open to read.</p>
       <div class="hero-cta">
@@ -599,7 +612,7 @@
       </div>
       <div class="colophon">
         <span>🍔 Lunch Tracker — a personal lunch assistant for 1 Depot Rd, Singapore.</span>
-        <span>Runs on a schedule and a chat — no app, no account. <a href="https://github.com/Weiming95/lunch-harness">Source →</a></span>
+        <span>Runs on a schedule and a chat — no app, no account. 🐌 Gary says meow. <a href="https://github.com/Weiming95/lunch-harness">Source →</a></span>
       </div>
     </div>
   </section>
