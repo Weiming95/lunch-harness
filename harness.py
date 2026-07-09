@@ -829,58 +829,91 @@ def build_dashboard_html(log, suggestions):
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Lunch Tracker</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>🍔</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Luckiest+Guy&family=Permanent+Marker&family=Titan+One&display=swap" rel="stylesheet">
 <style>
-  :root {{ color-scheme: light dark; }}
+  :root {{ color-scheme: light; --sand:#f4e7c4; --paper:#fffdf4; --sponge:#ffdf1c; --krabs:#e63c2f;
+    --ocean:#1fb2cf; --ocean-deep:#0b657a; --navy:#0e2e38; --ink:#123a47; --muted:#57727a;
+    --line:rgba(18,58,71,.16); --hard:5px 5px 0 rgba(18,58,71,.92); }}
   * {{ box-sizing: border-box; }}
-  body {{ font: 16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-         margin: 0; padding: 2rem 1rem; background: #f6f7f9; color: #1a1a2e; }}
-  @media (prefers-color-scheme: dark) {{ body {{ background:#12131a; color:#e8e8ef; }}
-    .card {{ background:#1c1e28 !important; }} th {{ border-color:#333 !important; }}
-    td {{ border-color:#2a2c38 !important; }} }}
-  .wrap {{ max-width: 760px; margin: 0 auto; }}
-  h1 {{ font-size: 1.4rem; margin: 0 0 .25rem; }}
-  .sub {{ color: #888; margin: 0 0 1.5rem; font-size: .9rem; }}
-  .card {{ background: #fff; border-radius: 14px; padding: 1.25rem; margin-bottom: 1.25rem;
-          box-shadow: 0 1px 3px rgba(0,0,0,.08); }}
-  .total {{ font-size: 2.4rem; font-weight: 700; }}
-  .total small {{ font-size: 1rem; font-weight: 400; color:#888; }}
-  .meter {{ height: 10px; border-radius: 6px; background: #e6e8ee; overflow: hidden; margin:.6rem 0 .2rem; }}
-  .meter > i {{ display:block; height:100%; background:{'#e5484d' if over else '#30a46c'}; width:{pct}%; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  th,td {{ text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #eee; }}
-  th {{ font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color:#888; }}
-  .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  .muted {{ color: #999; }}
-  .chart {{ display: flex; gap: .5rem; align-items: flex-end; height: 140px; }}
-  .bar {{ flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; height:100%; position:relative; }}
-  .fill {{ width: 70%; background:#30a46c; border-radius:4px 4px 0 0; min-height:2px; }}
-  .fill.over {{ background:#e5484d; }}
-  .bl {{ font-size:.65rem; color:#888; margin-top:.3rem; }}
-  .bv {{ font-size:.6rem; color:#aaa; }}
-  ul {{ margin:.3rem 0; padding-left: 1.1rem; }} li {{ margin:.35rem 0; }}
-</style></head><body><div class="wrap">
-  <h1>🍱 Lunch Tracker</h1>
-  <p class="sub">Calorie log &amp; lunch picks near 1 Depot Rd · updated {_esc(_now_sgt().strftime('%Y-%m-%d %H:%M'))} SGT</p>
+  body {{ font-family:"Fredoka",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; font-size:16px; line-height:1.55; font-weight:400;
+    margin:0; padding:2.2rem 1rem 3rem; color:var(--ink);
+    background: radial-gradient(1000px 420px at 82% -10%, rgba(255,223,28,.42), transparent 60%), linear-gradient(180deg,#f7ecce,#f0e0ba 55%,#e9d8a8);
+    background-attachment:fixed; -webkit-font-smoothing:antialiased; overflow-x:hidden; }}
+  .bubbles {{ position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden; }}
+  .bubbles b {{ position:absolute; bottom:-50px; border-radius:50%;
+    background:radial-gradient(circle at 32% 30%, rgba(255,255,255,.95), rgba(255,255,255,.12) 46%, rgba(255,255,255,.04) 70%);
+    border:1px solid rgba(255,255,255,.5); opacity:.5; animation:rise linear infinite; }}
+  @keyframes rise {{ 0%{{ transform:translateY(0); opacity:0 }} 12%{{ opacity:.55 }} 100%{{ transform:translateY(-108vh) translateX(-8px); opacity:0 }} }}
+  .wrap {{ max-width:820px; margin:0 auto; position:relative; z-index:2; }}
+  .head {{ display:flex; align-items:center; gap:11px; }}
+  .head .dot {{ font-size:2rem; }}
+  h1 {{ font-family:"Titan One",cursive; font-weight:400; font-size:1.95rem; margin:0; color:var(--ink); }}
+  .sub {{ font-family:"Permanent Marker",cursive; color:var(--ocean-deep); margin:.4rem 0 1.6rem; font-size:.92rem; }}
+  .card {{ background:var(--paper); border:3px solid var(--ink); border-radius:18px; padding:1.4rem 1.5rem; margin-bottom:1.4rem; box-shadow:var(--hard); }}
+  .rhead {{ font-family:"Permanent Marker",cursive; color:var(--krabs); font-size:.92rem; margin-bottom:.5rem; }}
+  .total {{ font-family:"Luckiest Guy",cursive; font-size:2.7rem; line-height:1; color:var(--ink); }}
+  .total small {{ font-family:"Fredoka"; font-size:1rem; font-weight:500; color:var(--muted); }}
+  .meter {{ height:14px; border:2px solid var(--ink); border-radius:8px; background:#fff; overflow:hidden; margin:.75rem 0 .35rem; }}
+  .meter > i {{ display:block; height:100%; background:{'#e63c2f' if over else '#ffdf1c'}; width:{pct}%; }}
+  .muted {{ color:var(--muted); }}
+  table {{ width:100%; border-collapse:collapse; margin-top:1rem; }}
+  th,td {{ text-align:left; padding:.55rem .4rem; border-bottom:1px dotted var(--line); }}
+  th {{ font-family:"Permanent Marker",cursive; font-size:.74rem; text-transform:uppercase; letter-spacing:.03em; color:var(--krabs); }}
+  .num {{ text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }}
+  h3 {{ font-family:"Luckiest Guy",cursive; font-weight:400; font-size:1.2rem; margin:0 0 .8rem; color:var(--ink); }}
+  .card.chart-card {{ background:var(--ocean-deep); color:#eaf6f8; }}
+  .card.chart-card h3 {{ color:#fff; }}
+  .chart {{ display:flex; gap:.5rem; align-items:flex-end; height:150px; }}
+  .bar {{ flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; height:100%; }}
+  .fill {{ width:72%; background:var(--sponge); border:2px solid var(--ink); border-radius:5px 5px 0 0; min-height:4px; }}
+  .fill.over {{ background:var(--krabs); }}
+  .bl {{ font-family:"Permanent Marker",cursive; font-size:.66rem; color:#dff3f6; margin-top:.35rem; }}
+  .bv {{ font-size:.6rem; color:#bfe0e6; }}
+  ul {{ list-style:none; margin:.3rem 0 0; padding:0; }}
+  li {{ padding:.6rem 0; border-bottom:1px dotted var(--line); }}
+  li:last-child {{ border-bottom:none; }}
+  li b {{ font-family:"Permanent Marker",cursive; color:var(--krabs); font-weight:400; }}
+  .foot {{ text-align:center; font-family:"Permanent Marker",cursive; color:var(--muted); font-size:.84rem; margin-top:.4rem; }}
+  .foot a {{ color:var(--ocean-deep); text-decoration:none; }}
+  @media (prefers-reduced-motion: reduce) {{ .bubbles {{ display:none; }} }}
+</style></head><body>
+<div class="bubbles" aria-hidden="true">
+  <b style="left:8%;width:14px;height:14px;animation-duration:15s"></b>
+  <b style="left:20%;width:9px;height:9px;animation-duration:11s;animation-delay:3s"></b>
+  <b style="left:35%;width:20px;height:20px;animation-duration:19s;animation-delay:1s"></b>
+  <b style="left:50%;width:8px;height:8px;animation-duration:10s;animation-delay:5s"></b>
+  <b style="left:64%;width:16px;height:16px;animation-duration:16s;animation-delay:2s"></b>
+  <b style="left:78%;width:11px;height:11px;animation-duration:13s;animation-delay:6s"></b>
+  <b style="left:90%;width:22px;height:22px;animation-duration:21s"></b>
+</div>
+<div class="wrap">
+  <div class="head"><span class="dot">🍔</span><h1>Lunch Tracker</h1></div>
+  <p class="sub">Calorie log &amp; today's specials near 1 Depot Rd · updated {_esc(_now_sgt().strftime('%Y-%m-%d %H:%M'))} SGT</p>
 
   <div class="card">
+    <div class="rhead">🦀 TODAY'S TALLY</div>
     <div class="total">{today_cals} <small>/ {DAILY_CALORIE_TARGET} kcal today</small></div>
     <div class="meter"><i></i></div>
-    <div class="muted">{pct}% of target{' · over target' if over else ''}</div>
-    <table style="margin-top:1rem">
+    <div class="muted">{pct}% of target{' · over target — easy there, me boy!' if over else ' · save room for a Krabby Patty'}</div>
+    <table>
       <tr><th>Time</th><th>Meal</th><th>What</th><th class="num">kcal</th></tr>
       {meal_rows}
     </table>
   </div>
 
-  <div class="card">
-    <h3 style="margin:0 0 .8rem">Last 7 days</h3>
+  <div class="card chart-card">
+    <h3>This week's catch</h3>
     <div class="chart">{bars}</div>
   </div>
 
   <div class="card">
-    <h3 style="margin:0 0 .5rem">Recent lunch suggestions</h3>
+    <h3>Recent lunch specials</h3>
     <ul>{sugg_rows}</ul>
   </div>
+
+  <p class="foot">🧽 The finest lunch pick in the sea · <a href="https://weiming95.github.io/lunch-harness/">What is this? →</a></p>
 </div></body></html>
 """
     return html
