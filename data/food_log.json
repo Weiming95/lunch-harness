@@ -7,5 +7,14 @@
     "calories": 800,
     "protein_g": 40,
     "meal_type": "lunch"
+  },
+  {
+    "id": 2,
+    "date": "2026-07-09",
+    "time": "12:51",
+    "description": "a glass of plain water",
+    "calories": 0,
+    "protein_g": null,
+    "meal_type": "snack"
   }
 ]
