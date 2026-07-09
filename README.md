@@ -13,80 +13,66 @@ text-in/text-out function*), different job.
 - **Weekday lunch suggestion.** Each weekday (Mon–Fri, 11:50 SGT) it looks at your last few
   days of meals, searches eateries near the office (Google Places), and suggests one option.
 - **Live dashboard on Vercel** (`GET /`) — a calorie dashboard + recent lunch picks, rendered
-  from the current state on every request, so it's always up to date. Also mirrored to
-  **GitHub Pages** (`docs/index.html`) as a static, slightly-delayed secondary view.
+  from the current state on every request, so it's always up to date.
 
-**Instant replies via a Telegram webhook.** A small Vercel Python function
-(`api/telegram.py`) receives each message the moment you send it and reuses `harness.py`
-for the agent. **State stays in GitHub** (`data/*.json`) and the **dashboard stays on GitHub
-Pages** — the function commits new meals to the repo, which triggers a GitHub Action to
-re-render the dashboard.
+**Everything runs on Vercel; data lives in Upstash Redis.** A single Vercel Python function
+(`api/telegram.py`) is the Telegram webhook, the dashboard, and the daily-suggestion cron
+target — all reusing `harness.py` for the agent. State (food log + suggestions) is stored in
+**Upstash Redis**, so nothing is committed to git on every meal. GitHub holds only the code.
 
 ## How it works
 
 ```
-you ──Telegram webhook──▶ Vercel fn (api/telegram.py) ──▶ harness.converse() (OpenCode model)
-                              │  instant reply           │ tools: log_meal / update / delete
-                              ▼                          ▼
-             commit data/food_log.json to GitHub  (reads state from GitHub, works in /tmp)
-                              │
-                              ▼  (push to data/**)
-              GitHub Action dashboard.yml ──▶ harness.py --dashboard ──▶ Pages
+you ──Telegram webhook (POST /api/telegram)──▶ Vercel fn ──▶ harness.converse() (OpenCode)
+                                                   │ tools: log_meal / update / delete / search
+                                                   ▼
+                                        read/write food log in Upstash Redis
 
-cron Mon-Fri 11:50 SGT ──▶ lunch-suggest.yml ──▶ harness.py --suggest
-                       read_food_log → search_places → pick → send_telegram
+Vercel Cron (Mon-Fri 11:50 SGT) ──▶ GET /api/suggest ──▶ harness.suggest()
+                       read_food_log → read_recent_picks → search_places → pick → Telegram
+
+anyone ──▶ GET / ──▶ dashboard rendered live from Redis
 ```
 
-The daily lunch suggestion stays on **GitHub Actions cron** (it doesn't need to be
-real-time). Only the interactive logging moved to the webhook.
+No GitHub Actions, no per-meal commits, no static Pages build to wait on — the dashboard is
+always current because it reads Redis on each request.
 
 ## Files
 
 | Path | What |
 |------|------|
-| `harness.py` | The whole agent: config, model call, tool loop, tools, dashboard renderer, CLI. |
-| `api/telegram.py` | Vercel webhook: receives Telegram messages, runs the agent, commits state to GitHub. |
-| `system_prompt.md` | Standing orders (role, auto-log+correct contract, health nudges). |
+| `harness.py` | The whole agent: config, model call, tool loop, tools, store (Redis/file), dashboard, CLI. |
+| `api/telegram.py` | Vercel function: webhook (POST), daily-suggest cron (`/api/suggest`), and live dashboard (`GET /`). |
+| `system_prompt.md` | Standing orders (role, auto-log+correct contract, health + variety nudges). |
 | `pyproject.toml` | Vercel Python entrypoint config (`api.telegram:handler`). |
-| `data/food_log.json` | Meal history — the "database". |
-| `data/suggestions.json` | Daily lunch picks (feeds the Pages log). |
-| `docs/index.html` | Generated GitHub Pages dashboard. |
-| `.github/workflows/dashboard.yml` | On push to `data/**`: re-render the dashboard for Pages. |
-| `.github/workflows/lunch-suggest.yml` | Weekday (Mon–Fri) 11:50 SGT lunch suggestion. |
+| `vercel.json` | Vercel Cron schedule for the daily suggestion. |
+
+State (food log + suggestions) is **not** in the repo — it lives in Upstash Redis under the
+keys `food_log` and `suggestions`. Locally (no Redis env) it falls back to `data/*.json`.
 
 ## Setup
 
-1. **Clone / push** this repo to GitHub.
+1. **Push** this repo to GitHub (code only — no data or secrets).
 2. **Telegram bot:** message [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token.
-   Message your new bot once, then run `python3 harness.py --tg-updates` locally to get your
-   `chat_id`.
-3. **OpenCode Go:** get your API key + model id (OpenAI-compatible endpoint).
-4. **Google Places:** use your existing key (Places API **New/v1** enabled, billing on).
-5. **Local `.env`:** `cp .env.example .env` and fill in the five values.
-6. **GitHub secrets** (Settings → Secrets and variables → Actions): add
-   `OPENCODE_API_KEY`, `OPENCODE_MODEL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
-   `GOOGLE_PLACES_API_KEY` (used by the daily lunch-suggest + dashboard workflows).
-7. **GitHub Pages:** Settings → Pages → *Deploy from a branch* → `main` / `/docs`.
-8. **Deploy the webhook to Vercel** (see below).
-
-### Deploy the webhook (Vercel)
-
-1. **GitHub PAT:** create a *fine-grained* token with **Contents: Read and write** on this
-   repo only. This lets the function commit logged meals.
-2. **Deploy:** `vercel` then `vercel --prod` (or connect the repo in the Vercel dashboard).
-3. **Env vars** (`vercel env add …` or dashboard) — the same model/Telegram/Places keys **plus**
-   `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_BRANCH`, `TELEGRAM_WEBHOOK_SECRET` (any random string),
-   and `LUNCH_DATA_DIR=/tmp/lh/data`, `LUNCH_DOCS_DIR=/tmp/lh/docs`.
-4. **Register the webhook** with Telegram (replace the URL + token):
+   Message it once, then `python3 harness.py --tg-updates` locally to get your `chat_id`.
+3. **OpenCode Go:** API key + model id. **Google Places:** key with Places API **New/v1** on.
+4. **Upstash Redis:** in the Vercel dashboard → project → *Storage* → add **Upstash Redis**
+   (Marketplace, free tier). It auto-adds `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`.
+5. **Deploy to Vercel:** `vercel --prod` (from the repo).
+6. **Env vars** (`vercel env add … production` or dashboard): `OPENCODE_API_KEY`,
+   `OPENCODE_MODEL`, `OPENCODE_BASE_URL`, `GOOGLE_PLACES_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+   `TELEGRAM_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET` (random), `CRON_SECRET` (random),
+   `DAILY_CALORIE_TARGET`. (Upstash vars come from step 4.)
+7. **Register the webhook** with Telegram (replace URL + token):
    ```bash
    curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
      -d "url=https://<your-app>.vercel.app/api/telegram" \
      -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
    ```
-   Setting a webhook disables `getUpdates` polling — that's expected.
+   Setting a webhook disables `getUpdates` polling — expected.
 
-> ⚠️ GitHub cron (the daily suggestion) pauses after ~60 days of repo inactivity; any push or
-> manual run re-arms it. The webhook itself is always-on and unaffected.
+> The daily suggestion runs via **Vercel Cron** (`/api/suggest`, Mon–Fri 11:50 SGT). On the
+> Hobby plan cron timing isn't minute-precise, so the function also guards to weekdays itself.
 
 ## Local usage
 
@@ -94,8 +80,8 @@ real-time). Only the interactive logging moved to the webhook.
 python3 harness.py                 # interactive REPL (debug)
 python3 harness.py --once "..."    # one-shot prompt
 python3 harness.py --suggest       # run the daily suggestion
-python3 harness.py --dashboard     # re-render docs/index.html from data
-python3 harness.py --tg-updates    # find your Telegram chat id (only works before a webhook is set)
+python3 harness.py --dashboard     # render docs/index.html from local data (dev only)
+python3 harness.py --tg-updates    # find your Telegram chat id (only before a webhook is set)
 python3 harness.py --models        # list available models
 ```
 
@@ -105,7 +91,9 @@ Env vars (via real env, `.env`, or — for `OPENCODE_API_KEY` — the macOS Keyc
 password `opencode-api-key`):
 
 `OPENCODE_API_KEY`, `OPENCODE_MODEL`, `OPENCODE_BASE_URL`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_CHAT_ID`, `GOOGLE_PLACES_API_KEY`, `DAILY_CALORIE_TARGET` (default 2100).
+`TELEGRAM_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET`, `GOOGLE_PLACES_API_KEY`, `CRON_SECRET`,
+`DAILY_CALORIE_TARGET` (default 2100), and `UPSTASH_REDIS_REST_URL` /
+`UPSTASH_REDIS_REST_TOKEN` (store; falls back to local files if unset).
 
 The office location and search radius are constants at the top of `harness.py`
 (`OFFICE_LAT`, `OFFICE_LNG`, `SEARCH_RADIUS_M`).

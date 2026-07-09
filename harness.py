@@ -30,6 +30,7 @@ import sys
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,14 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "").strip()
 
+# Upstash Redis (REST). When set, it's the state store; otherwise fall back to
+# local JSON files (for local dev / the CLI). The Vercel Upstash integration
+# provides UPSTASH_REDIS_REST_* (and KV_REST_API_* aliases).
+REDIS_URL = (os.environ.get("UPSTASH_REDIS_REST_URL")
+             or os.environ.get("KV_REST_API_URL") or "").rstrip("/")
+REDIS_TOKEN = (os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+               or os.environ.get("KV_REST_API_TOKEN") or "")
+
 DAILY_CALORIE_TARGET = int(os.environ.get("DAILY_CALORIE_TARGET", "2100"))
 
 MAX_TOOL_ITERS = 12
@@ -127,6 +136,62 @@ def _now_sgt():
 
 def _today_sgt():
     return _now_sgt().strftime("%Y-%m-%d")
+
+
+# ---------------------------------------------------------------------------
+# State store: Upstash Redis (REST) when configured, else local JSON files.
+# Keeps the food log + suggestions off git — no commit per meal.
+# ---------------------------------------------------------------------------
+def _redis_get(key):
+    req = urllib.request.Request(
+        f"{REDIS_URL}/get/{urllib.parse.quote(key, safe='')}",
+        headers={"Authorization": f"Bearer {REDIS_TOKEN}", "User-Agent": "lunch-harness/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode()).get("result")
+
+
+def _redis_set(key, value_str):
+    req = urllib.request.Request(
+        f"{REDIS_URL}/set/{urllib.parse.quote(key, safe='')}",
+        data=value_str.encode(), method="POST",
+        headers={"Authorization": f"Bearer {REDIS_TOKEN}", "User-Agent": "lunch-harness/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode())
+
+
+_LOCAL_PATHS = {"food_log": FOOD_LOG, "suggestions": SUGGESTIONS}
+
+
+def _store_get(key, default):
+    if REDIS_URL and REDIS_TOKEN:
+        val = _redis_get(key)
+        return json.loads(val) if val else default
+    return _read_json(_LOCAL_PATHS[key], default)
+
+
+def _store_set(key, value):
+    if REDIS_URL and REDIS_TOKEN:
+        _redis_set(key, json.dumps(value, ensure_ascii=False))
+    else:
+        _write_json(_LOCAL_PATHS[key], value)
+
+
+def load_food_log():
+    return _store_get("food_log", [])
+
+
+def save_food_log(log):
+    _store_set("food_log", log)
+
+
+def load_suggestions():
+    return _store_get("suggestions", [])
+
+
+def save_suggestions(suggestions):
+    _store_set("suggestions", suggestions)
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +335,7 @@ def search_places(keyword="lunch", max_results=8):
 
 def read_recent_picks(count=10):
     """Recent lunch suggestions, so you can avoid repeating a place or cuisine."""
-    s = _read_json(SUGGESTIONS, [])
+    s = load_suggestions()
     count = max(1, min(int(count or 10), 30))
     return {"recent_picks": [x.get("pick", "") for x in s[-count:]]}
 
@@ -278,7 +343,7 @@ def read_recent_picks(count=10):
 def read_food_log(days=3):
     """Return meals logged in the last `days` days (SGT), plus today's total."""
     days = max(1, min(int(days or 3), 30))
-    log = _read_json(FOOD_LOG, [])
+    log = load_food_log()
     cutoff = (_now_sgt() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     recent = [m for m in log if m.get("date", "") >= cutoff]
     today = _today_sgt()
@@ -294,7 +359,7 @@ def read_food_log(days=3):
 
 def log_meal(description, calories, protein_g=None, meal_type=None):
     """Append a meal to the food log (dated now, SGT)."""
-    log = _read_json(FOOD_LOG, [])
+    log = load_food_log()
     now = _now_sgt()
     entry = {
         "id": (log[-1]["id"] + 1) if log else 1,
@@ -306,14 +371,14 @@ def log_meal(description, calories, protein_g=None, meal_type=None):
         "meal_type": meal_type or _infer_meal_type(now),
     }
     log.append(entry)
-    _write_json(FOOD_LOG, log)
+    save_food_log(log)
     today_cals = sum(int(m.get("calories", 0)) for m in log if m.get("date") == entry["date"])
     return {"logged": entry, "today_calories": today_cals, "daily_target": DAILY_CALORIE_TARGET}
 
 
 def update_last_meal(calories=None, description=None, protein_g=None):
     """Correct the most recently logged meal."""
-    log = _read_json(FOOD_LOG, [])
+    log = load_food_log()
     if not log:
         return {"error": "food log is empty; nothing to update."}
     entry = log[-1]
@@ -323,18 +388,18 @@ def update_last_meal(calories=None, description=None, protein_g=None):
         entry["description"] = str(description)
     if protein_g is not None:
         entry["protein_g"] = int(protein_g)
-    _write_json(FOOD_LOG, log)
+    save_food_log(log)
     today_cals = sum(int(m.get("calories", 0)) for m in log if m.get("date") == entry["date"])
     return {"updated": entry, "today_calories": today_cals}
 
 
 def delete_last_meal():
     """Remove the most recently logged meal."""
-    log = _read_json(FOOD_LOG, [])
+    log = load_food_log()
     if not log:
         return {"error": "food log is empty; nothing to delete."}
     removed = log.pop()
-    _write_json(FOOD_LOG, log)
+    save_food_log(log)
     return {"deleted": removed}
 
 
@@ -524,7 +589,7 @@ def _esc(s):
 
 def render_dashboard():
     """Read state from disk, render, and write docs/index.html (for Pages)."""
-    html = build_dashboard_html(_read_json(FOOD_LOG, []), _read_json(SUGGESTIONS, []))
+    html = build_dashboard_html(load_food_log(), load_suggestions())
     os.makedirs(DOCS_DIR, exist_ok=True)
     path = os.path.join(DOCS_DIR, "index.html")
     with open(path, "w") as f:
@@ -716,7 +781,7 @@ def _last_telegram_text(messages):
 def suggest():
     # Feed recent picks straight into the prompt so variety doesn't depend on the
     # model remembering to call the tool.
-    recent = _read_json(SUGGESTIONS, [])[-10:]
+    recent = load_suggestions()[-10:]
     avoid = "; ".join(s.get("pick", "")[:90] for s in recent) or "nothing yet"
     prompt = (
         SUGGEST_PROMPT
@@ -730,14 +795,13 @@ def suggest():
     sent_text = _last_telegram_text(messages)
     if not sent_text and reply:
         send_telegram(reply)
-    # Record the actual suggestion for the Pages log.
+    # Record the actual suggestion so the dashboard + variety check can see it.
     pick = (sent_text or reply or "").strip()
     pick = pick.replace("\n", " ").strip()[:280] or "(sent via tool)"
-    suggestions = _read_json(SUGGESTIONS, [])
+    suggestions = load_suggestions()
     suggestions.append({"date": _today_sgt(), "pick": pick, "reason": ""})
-    _write_json(SUGGESTIONS, suggestions)
+    save_suggestions(suggestions)
     print(pick)
-    render_dashboard()
     print("Suggestion recorded.")
 
 
