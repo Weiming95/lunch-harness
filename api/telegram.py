@@ -71,6 +71,17 @@ def gh_get_food_log():
         raise
 
 
+def gh_get_json(path, default):
+    """Fetch and parse a JSON file from the repo (default on 404)."""
+    try:
+        resp = _gh_api("GET", f"/repos/{GH_REPO}/contents/{path}?ref={GH_BRANCH}")
+        return json.loads(base64.b64decode(resp["content"]).decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return default
+        raise
+
+
 def gh_put_food_log(content, sha, message):
     payload = {
         "message": message,
@@ -137,7 +148,20 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body.encode())
 
     def do_GET(self):
-        self._respond(200, "lunch-harness webhook is up")
+        # Live dashboard: render the current GitHub state on every request, so
+        # it's always up to date (no waiting on the Actions -> Pages rebuild).
+        try:
+            log = gh_get_json("data/food_log.json", [])
+            suggestions = gh_get_json("data/suggestions.json", [])
+            html = harness.build_dashboard_html(log, suggestions)
+        except Exception as e:
+            self._respond(200, f"dashboard error: {e}")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(html.encode())
 
     def do_POST(self):
         if WEBHOOK_SECRET and self.headers.get(

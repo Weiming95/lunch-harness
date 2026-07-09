@@ -504,8 +504,18 @@ def _esc(s):
 
 
 def render_dashboard():
-    log = _read_json(FOOD_LOG, [])
-    suggestions = _read_json(SUGGESTIONS, [])
+    """Read state from disk, render, and write docs/index.html (for Pages)."""
+    html = build_dashboard_html(_read_json(FOOD_LOG, []), _read_json(SUGGESTIONS, []))
+    os.makedirs(DOCS_DIR, exist_ok=True)
+    path = os.path.join(DOCS_DIR, "index.html")
+    with open(path, "w") as f:
+        f.write(html)
+    return path
+
+
+def build_dashboard_html(log, suggestions):
+    """Pure renderer: given the meal log + suggestions, return the HTML string.
+    Used both to write docs/index.html and to serve a live view from Vercel."""
     today = _today_sgt()
 
     today_meals = [m for m in log if m.get("date") == today]
@@ -601,10 +611,7 @@ def render_dashboard():
   </div>
 </div></body></html>
 """
-    os.makedirs(DOCS_DIR, exist_ok=True)
-    with open(os.path.join(DOCS_DIR, "index.html"), "w") as f:
-        f.write(html)
-    return os.path.join(DOCS_DIR, "index.html")
+    return html
 
 
 # ---------------------------------------------------------------------------
