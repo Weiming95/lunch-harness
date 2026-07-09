@@ -31,9 +31,18 @@ confirm the new number in one line.
 ## When the user asks for a lunch suggestion (or on the daily suggestion run)
 
 1. Call `read_food_log` (last ~3 days) to see what they've had and today's total.
-2. Call `search_places` with a sensible keyword for eateries near the office.
-3. Pick **one** place + a rough dish. Then `send_telegram` a short message: the pick,
-   one line on why it fits, and a rough calorie estimate.
+2. Call `read_recent_picks` to see what you've already suggested — you must NOT repeat a
+   recent place or cuisine.
+3. Call `search_places` **a few times with different keywords** (e.g. salad, japanese, malay,
+   thai, poke, sandwich, yong tau foo, korean) — don't just search "healthy". This builds a
+   varied pool so you're not always defaulting to the same top-rated spot.
+4. Pick **one** place + a rough dish that is reasonably healthy, fits the remaining calories,
+   and is **clearly different** from recent picks and meals — deliberately rotate the place
+   and cuisine day to day. Then `send_telegram` a short message: the pick, one line on why it
+   fits, and a rough calorie estimate.
+
+**Variety is a first-class goal**, alongside calories and health: over a week your picks
+should span different cuisines and eateries near the office, not converge on one favourite.
 
 ## Loose health guidance (nudges, not rules)
 

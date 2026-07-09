@@ -97,10 +97,13 @@ def _seed_tmp(food_log_content):
     os.makedirs(harness.DATA_DIR, exist_ok=True)
     with open(harness.FOOD_LOG, "w") as f:
         f.write(food_log_content)
-    # render_dashboard/read paths also touch suggestions.json — keep it valid.
-    if not os.path.exists(harness.SUGGESTIONS):
-        with open(harness.SUGGESTIONS, "w") as f:
-            f.write("[]\n")
+    # Seed suggestions too so read_recent_picks works for on-demand suggestions.
+    try:
+        suggestions = gh_get_json("data/suggestions.json", [])
+    except Exception:
+        suggestions = []
+    with open(harness.SUGGESTIONS, "w") as f:
+        json.dump(suggestions, f)
 
 
 # --- Core (testable, no HTTP framework) -----------------------------------

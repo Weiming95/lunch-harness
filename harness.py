@@ -100,7 +100,7 @@ GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "").strip()
 
 DAILY_CALORIE_TARGET = int(os.environ.get("DAILY_CALORIE_TARGET", "2100"))
 
-MAX_TOOL_ITERS = 8
+MAX_TOOL_ITERS = 12
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +268,13 @@ def search_places(keyword="lunch", max_results=8):
     return {"query": keyword, "count": len(results), "places": results[:max_results]}
 
 
+def read_recent_picks(count=10):
+    """Recent lunch suggestions, so you can avoid repeating a place or cuisine."""
+    s = _read_json(SUGGESTIONS, [])
+    count = max(1, min(int(count or 10), 30))
+    return {"recent_picks": [x.get("pick", "") for x in s[-count:]]}
+
+
 def read_food_log(days=3):
     """Return meals logged in the last `days` days (SGT), plus today's total."""
     days = max(1, min(int(days or 3), 30))
@@ -375,6 +382,17 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "read_recent_picks",
+            "description": "List recently suggested lunch picks so you can suggest something different and avoid repeats.",
+            "parameters": {
+                "type": "object",
+                "properties": {"count": {"type": "integer", "description": "How many recent picks to return (default 10)."}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_food_log",
             "description": "Read meals logged over the last N days, plus today's calorie total and the daily target. Use before suggesting lunch or judging how the day is going.",
             "parameters": {
@@ -439,6 +457,7 @@ TOOLS = [
 
 DISPATCH = {
     "search_places": search_places,
+    "read_recent_picks": read_recent_picks,
     "read_food_log": read_food_log,
     "log_meal": log_meal,
     "update_last_meal": update_last_meal,
@@ -671,10 +690,14 @@ def poll():
 # ---------------------------------------------------------------------------
 SUGGEST_PROMPT = (
     "It's late morning — suggest ONE lunch option near the office for me. "
-    "First read my food log for the last 3 days, then search nearby places, "
-    "then pick a single spot + rough dish that balances what I've eaten recently "
-    "and my daily target (avoid repeating heavy/fried meals from the last day or two). "
-    "Send me a short Telegram message: the pick, why it fits, and a rough calorie estimate."
+    "Steps: (1) read my food log for the last 3 days; (2) check read_recent_picks so you "
+    "know what you've already suggested; (3) search a FEW different cuisines/dish types "
+    "(e.g. salad, japanese, malay, thai, poke, sandwich, yong tau foo, korean) — NOT just "
+    "'healthy' — to build a varied set of nearby options. Then pick ONE spot + dish that is "
+    "reasonably healthy, fits my remaining calories, and is clearly DIFFERENT from what I've "
+    "eaten or been suggested recently — rotate the place AND the cuisine, don't repeat a "
+    "recent pick. Send a short Telegram message: the pick, one line on why it fits, and a "
+    "rough calorie estimate."
 )
 
 
@@ -691,11 +714,24 @@ def _last_telegram_text(messages):
 
 
 def suggest():
+    # Feed recent picks straight into the prompt so variety doesn't depend on the
+    # model remembering to call the tool.
+    recent = _read_json(SUGGESTIONS, [])[-10:]
+    avoid = "; ".join(s.get("pick", "")[:90] for s in recent) or "nothing yet"
+    prompt = (
+        SUGGEST_PROMPT
+        + "\n\nRecently suggested (do NOT repeat these places/cuisines — pick something "
+          "clearly different):\n" + avoid
+    )
     messages = [_system_message()]
-    reply = converse(messages, SUGGEST_PROMPT)
-    # Record the actual suggestion for the Pages log — prefer the text the model
-    # sent via send_telegram over its final meta-reply ("Sent! Check Telegram...").
-    pick = _last_telegram_text(messages) or (reply or "").strip()
+    reply = converse(messages, prompt)
+    # Guarantee delivery: if the model answered with plain text instead of calling
+    # send_telegram, send it ourselves — otherwise the daily pick never arrives.
+    sent_text = _last_telegram_text(messages)
+    if not sent_text and reply:
+        send_telegram(reply)
+    # Record the actual suggestion for the Pages log.
+    pick = (sent_text or reply or "").strip()
     pick = pick.replace("\n", " ").strip()[:280] or "(sent via tool)"
     suggestions = _read_json(SUGGESTIONS, [])
     suggestions.append({"date": _today_sgt(), "pick": pick, "reason": ""})
