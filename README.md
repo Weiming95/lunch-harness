@@ -46,7 +46,7 @@ real-time). Only the interactive logging moved to the webhook.
 | `harness.py` | The whole agent: config, model call, tool loop, tools, dashboard renderer, CLI. |
 | `api/telegram.py` | Vercel webhook: receives Telegram messages, runs the agent, commits state to GitHub. |
 | `system_prompt.md` | Standing orders (role, auto-log+correct contract, health nudges). |
-| `vercel.json` | Vercel function config (bundles `harness.py` + `system_prompt.md`). |
+| `pyproject.toml` | Vercel Python entrypoint config (`api.telegram:handler`). |
 | `data/food_log.json` | Meal history — the "database". |
 | `data/suggestions.json` | Daily lunch picks (feeds the Pages log). |
 | `docs/index.html` | Generated GitHub Pages dashboard. |

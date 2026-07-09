@@ -1,2 +1,0 @@
-# lunch-harness uses the Python standard library only.
-# This file exists so Vercel detects the Python runtime for api/*.py.

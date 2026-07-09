@@ -1,0 +1,9 @@
+[project]
+name = "lunch-harness"
+version = "0.1.0"
+description = "Telegram lunch suggester + calorie tracker webhook"
+requires-python = ">=3.12"
+# stdlib only — no dependencies
+
+[tool.vercel]
+entrypoint = "api.telegram:handler"
