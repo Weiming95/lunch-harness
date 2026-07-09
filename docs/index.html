@@ -162,6 +162,29 @@
   .card .num{font-family:"Space Mono";font-weight:700;color:var(--pandan);font-size:.85rem}
   .card h3{font-size:1.2rem;margin:12px 0 8px;font-family:"Bricolage Grotesque";font-weight:700}
   .card p{margin:0;color:var(--muted);font-size:.98rem}
+  .card .eg{margin-top:12px;font-family:"Space Mono";font-size:.78rem;color:var(--pandan-deep);background:var(--bg-2);border:1px solid var(--line);border-radius:9px;padding:8px 10px;line-height:1.45}
+  .card .eg b{color:var(--ink)}
+
+  /* inline calorie tracker (mirrors the live dashboard) */
+  .tracker{margin-top:18px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:26px;display:grid;grid-template-columns:1fr 1.15fr;gap:34px;align-items:center}
+  @media (max-width:760px){ .tracker{grid-template-columns:1fr;gap:26px} }
+  .tracker .cap{font-family:"Space Mono";font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .tracker .total{font-family:"Bricolage Grotesque";font-weight:800;font-size:clamp(2.2rem,4.5vw,3rem);line-height:1;margin:8px 0 0;letter-spacing:-.02em}
+  .tracker .total small{font-family:"Inter";font-weight:400;font-size:1rem;color:var(--muted);letter-spacing:0}
+  .tracker .meter{height:10px;border-radius:6px;background:var(--bg-2);overflow:hidden;margin:14px 0 8px}
+  .tracker .meter > i{display:block;height:100%;background:var(--pandan);width:68%}
+  .tracker .rows{margin-top:14px;display:flex;flex-direction:column;gap:2px}
+  .tracker .row{display:flex;justify-content:space-between;font-size:.9rem;padding:5px 0;border-bottom:1px dotted var(--line)}
+  .tracker .row:last-child{border-bottom:none}
+  .tracker .row .m{color:var(--ink)}
+  .tracker .row .m em{color:var(--muted);font-style:normal;font-family:"Space Mono";font-size:.72rem;margin-right:7px}
+  .tracker .row .c{font-family:"Space Mono";color:var(--muted)}
+  .chartbox .cap{margin-bottom:12px}
+  .chart7{display:flex;gap:8px;align-items:flex-end;height:120px}
+  .chart7 .col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%;gap:6px}
+  .chart7 .col .bar{width:66%;background:var(--pandan);border-radius:4px 4px 0 0;min-height:3px}
+  .chart7 .col .bar.today{background:var(--pandan-deep)}
+  .chart7 .col .d{font-family:"Space Mono";font-size:.6rem;color:var(--muted)}
 
   /* the daily nudge / lunch feed */
   .nudge{background:var(--pandan-deep);color:#f3f4f0;border-radius:26px;padding:clamp(28px,4.5vw,56px);margin-top:8px}
@@ -287,7 +310,7 @@
       <div>
         <span class="eyebrow"><b></b> A lunch harness · 1 Depot Rd, Singapore</span>
         <h1 class="title">Your lunch,<br>decided over <span class="green">text</span>.</h1>
-        <p class="lede">Every weekday at 11:50, a Telegram bot texts you a lunch pick near the office — before you’ve even thought about it. Tell it what you ate and it keeps your calorie total.</p>
+        <p class="lede">Every weekday at 11:50, a Telegram bot texts you a lunch pick near the office — before you’ve even thought about it. Tell it what you ate; it works out the calories and keeps your daily total.</p>
         <div class="hero-cta">
           <a class="btn btn-primary" href="https://lunch-harness.vercel.app" target="_blank" rel="noopener">Open the live dashboard →</a>
           <a class="btn btn-ghost" href="https://github.com/Weiming95/lunch-harness">Read the code</a>
@@ -333,23 +356,52 @@
   <section id="what">
     <div class="wrap">
       <p class="kicker reveal">What is this?</p>
-      <h2 class="h reveal">A lunch assistant that fits inside a chat thread.</h2>
-      <p class="section-lede reveal">No dashboard to open before you eat, no forms to fill. You text it in plain words; it does three things and stays out of the way.</p>
+      <h2 class="h reveal">It does the counting so you don’t have to.</h2>
+      <p class="section-lede reveal">No calorie app, no weighing food, no forms. You just say what you ate in plain words — it works out the numbers, keeps the tally, and uses your history to pick what’s next.</p>
       <div class="cards">
         <div class="card reveal">
-          <div class="num">01 / LOG</div>
-          <h3>Say what you ate</h3>
-          <p>“Laksa and a teh.” It estimates the calories, logs the meal, and tells you the running total for the day. Give your own number and it uses that.</p>
+          <div class="num">01 / CALCULATES</div>
+          <h3>Works out the calories for you</h3>
+          <p>Describe a meal in plain words; it estimates the calories from typical Singapore hawker portions. Know the number? Say it and it uses yours instead — or “make it 700” to fix its guess.</p>
+          <div class="eg">you: <b>laksa and a teh</b><br>→ <b>~620 kcal</b>, logged</div>
         </div>
         <div class="card reveal">
-          <div class="num">02 / CORRECT</div>
-          <h3>Fix it in one reply</h3>
-          <p>“Make it 700.” “Remove that.” “Two plates, actually.” It adjusts and confirms the new total — no menus, no editing screens.</p>
+          <div class="num">02 / TRACKS</div>
+          <h3>Keeps the daily tally for you</h3>
+          <p>Every meal rolls into a running total against your target, across breakfast, lunch, dinner and snacks. A live dashboard and 7-day view stay current on their own — you never add anything up.</p>
+          <div class="eg"><b>1,150 / 1,700</b> today<br>→ 3 meals · 550 to go</div>
         </div>
         <div class="card reveal">
-          <div class="num">03 / SUGGEST</div>
-          <h3>Get one pick at 11:50</h3>
-          <p>Every weekday it reads your recent meals, searches eateries near the office, and suggests a single spot that fits the calories you have left.</p>
+          <div class="num">03 / SUGGESTS</div>
+          <h3>Picks based on what you ate</h3>
+          <p>Each suggestion reads your last few days, fits the calories you have left, and avoids repeating a recent cuisine — so a heavy day steers the next pick lighter, automatically.</p>
+          <div class="eg">had laksa yesterday<br>→ today: <b>poke bowl, ~550</b></div>
+        </div>
+      </div>
+
+      <div class="tracker reveal" aria-label="Example of the calorie tally it keeps for you">
+        <div>
+          <div class="cap">Today · tracked for you</div>
+          <div class="total">1,150 <small>/ 1,700 kcal</small></div>
+          <div class="meter"><i></i></div>
+          <div class="cap" style="text-transform:none;letter-spacing:0">68% of target · 550 kcal left for dinner</div>
+          <div class="rows">
+            <div class="row"><span class="m"><em>08:40</em>kaya toast set + kopi</span><span class="c">450</span></div>
+            <div class="row"><span class="m"><em>13:05</em>chicken rice</span><span class="c">600</span></div>
+            <div class="row"><span class="m"><em>16:20</em>protein bar</span><span class="c">100</span></div>
+          </div>
+        </div>
+        <div class="chartbox">
+          <div class="cap">Last 7 days — added up automatically</div>
+          <div class="chart7">
+            <div class="col"><div class="bar" style="height:71%"></div><span class="d">Mon</span></div>
+            <div class="col"><div class="bar" style="height:88%"></div><span class="d">Tue</span></div>
+            <div class="col"><div class="bar" style="height:63%"></div><span class="d">Wed</span></div>
+            <div class="col"><div class="bar" style="height:95%"></div><span class="d">Thu</span></div>
+            <div class="col"><div class="bar" style="height:80%"></div><span class="d">Fri</span></div>
+            <div class="col"><div class="bar" style="height:52%"></div><span class="d">Sat</span></div>
+            <div class="col"><div class="bar today" style="height:68%"></div><span class="d">Sun</span></div>
+          </div>
         </div>
       </div>
     </div>
