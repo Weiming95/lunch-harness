@@ -36,8 +36,10 @@ from datetime import datetime, timezone, timedelta
 # Paths
 # ---------------------------------------------------------------------------
 ROOT = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(ROOT, "data")
-DOCS_DIR = os.path.join(ROOT, "docs")
+# Data/docs dirs are override-able so the Vercel webhook can point them at the
+# function's writable /tmp; locally and in Actions they default to the repo.
+DATA_DIR = os.environ.get("LUNCH_DATA_DIR", os.path.join(ROOT, "data"))
+DOCS_DIR = os.environ.get("LUNCH_DOCS_DIR", os.path.join(ROOT, "docs"))
 FOOD_LOG = os.path.join(DATA_DIR, "food_log.json")
 SUGGESTIONS = os.path.join(DATA_DIR, "suggestions.json")
 TG_OFFSET = os.path.join(DATA_DIR, "tg_offset.json")

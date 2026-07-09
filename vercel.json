@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/telegram.py": {
+      "maxDuration": 60,
+      "includeFiles": "{harness.py,system_prompt.md}"
+    }
+  }
+}

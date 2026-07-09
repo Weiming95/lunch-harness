@@ -15,34 +15,42 @@ text-in/text-out function*), different job.
 - **Published to GitHub Pages.** A daily calorie dashboard + recent lunch picks, rendered to
   `docs/index.html`.
 
-No server. **GitHub Actions is the whole backend** — state lives in `data/*.json` and is
-committed back to the repo on every run (which doubles as the Pages source).
+**Instant replies via a Telegram webhook.** A small Vercel Python function
+(`api/telegram.py`) receives each message the moment you send it and reuses `harness.py`
+for the agent. **State stays in GitHub** (`data/*.json`) and the **dashboard stays on GitHub
+Pages** — the function commits new meals to the repo, which triggers a GitHub Action to
+re-render the dashboard.
 
 ## How it works
 
 ```
-you ──Telegram──▶ poll.yml (every ~15m) ──▶ harness.py --poll ──▶ OpenCode model
-                                                   │ tools: log_meal / update / delete
-                                                   ▼
-                                             data/food_log.json ──▶ render docs/index.html
-                                                   │
-                                          git commit + push (state + Pages)
+you ──Telegram webhook──▶ Vercel fn (api/telegram.py) ──▶ harness.converse() (OpenCode model)
+                              │  instant reply           │ tools: log_meal / update / delete
+                              ▼                          ▼
+             commit data/food_log.json to GitHub  (reads state from GitHub, works in /tmp)
+                              │
+                              ▼  (push to data/**)
+              GitHub Action dashboard.yml ──▶ harness.py --dashboard ──▶ Pages
 
 cron Mon-Fri 11:50 SGT ──▶ lunch-suggest.yml ──▶ harness.py --suggest
                        read_food_log → search_places → pick → send_telegram
 ```
+
+The daily lunch suggestion stays on **GitHub Actions cron** (it doesn't need to be
+real-time). Only the interactive logging moved to the webhook.
 
 ## Files
 
 | Path | What |
 |------|------|
 | `harness.py` | The whole agent: config, model call, tool loop, tools, dashboard renderer, CLI. |
+| `api/telegram.py` | Vercel webhook: receives Telegram messages, runs the agent, commits state to GitHub. |
 | `system_prompt.md` | Standing orders (role, auto-log+correct contract, health nudges). |
+| `vercel.json` | Vercel function config (bundles `harness.py` + `system_prompt.md`). |
 | `data/food_log.json` | Meal history — the "database". |
 | `data/suggestions.json` | Daily lunch picks (feeds the Pages log). |
-| `data/tg_offset.json` | Last processed Telegram `update_id`. |
 | `docs/index.html` | Generated GitHub Pages dashboard. |
-| `.github/workflows/poll.yml` | Every ~15 min: drain Telegram, log, rebuild, commit. |
+| `.github/workflows/dashboard.yml` | On push to `data/**`: re-render the dashboard for Pages. |
 | `.github/workflows/lunch-suggest.yml` | Weekday (Mon–Fri) 11:50 SGT lunch suggestion. |
 
 ## Setup
@@ -56,22 +64,37 @@ cron Mon-Fri 11:50 SGT ──▶ lunch-suggest.yml ──▶ harness.py --sugges
 5. **Local `.env`:** `cp .env.example .env` and fill in the five values.
 6. **GitHub secrets** (Settings → Secrets and variables → Actions): add
    `OPENCODE_API_KEY`, `OPENCODE_MODEL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
-   `GOOGLE_PLACES_API_KEY`.
+   `GOOGLE_PLACES_API_KEY` (used by the daily lunch-suggest + dashboard workflows).
 7. **GitHub Pages:** Settings → Pages → *Deploy from a branch* → `main` / `/docs`.
-8. **Kick it off:** run each workflow once from the Actions tab (`workflow_dispatch`).
+8. **Deploy the webhook to Vercel** (see below).
 
-> ⚠️ GitHub cron pauses after ~60 days of repo inactivity; any push or manual run re-arms it.
-> Replies aren't instant — the poller runs every ~15 min.
+### Deploy the webhook (Vercel)
+
+1. **GitHub PAT:** create a *fine-grained* token with **Contents: Read and write** on this
+   repo only. This lets the function commit logged meals.
+2. **Deploy:** `vercel` then `vercel --prod` (or connect the repo in the Vercel dashboard).
+3. **Env vars** (`vercel env add …` or dashboard) — the same model/Telegram/Places keys **plus**
+   `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_BRANCH`, `TELEGRAM_WEBHOOK_SECRET` (any random string),
+   and `LUNCH_DATA_DIR=/tmp/lh/data`, `LUNCH_DOCS_DIR=/tmp/lh/docs`.
+4. **Register the webhook** with Telegram (replace the URL + token):
+   ```bash
+   curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
+     -d "url=https://<your-app>.vercel.app/api/telegram" \
+     -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+   ```
+   Setting a webhook disables `getUpdates` polling — that's expected.
+
+> ⚠️ GitHub cron (the daily suggestion) pauses after ~60 days of repo inactivity; any push or
+> manual run re-arms it. The webhook itself is always-on and unaffected.
 
 ## Local usage
 
 ```bash
 python3 harness.py                 # interactive REPL (debug)
 python3 harness.py --once "..."    # one-shot prompt
-python3 harness.py --poll          # process Telegram messages once
 python3 harness.py --suggest       # run the daily suggestion
 python3 harness.py --dashboard     # re-render docs/index.html from data
-python3 harness.py --tg-updates    # find your Telegram chat id
+python3 harness.py --tg-updates    # find your Telegram chat id (only works before a webhook is set)
 python3 harness.py --models        # list available models
 ```
 
