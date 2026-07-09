@@ -5,13 +5,14 @@ Singapore**. Pivoted from [hadr-harness](https://github.com/Weiming95/hadr-harne
 philosophy (*the harness is the loop, the tools, and the interface; the model is just a
 text-in/text-out function*), different job.
 
-- **Log meals over Telegram.** Text the bot what you ate ("chicken rice and kopi"). It
-  estimates the calories, logs it immediately, and tells you the running total. Reply to
-  correct it ("make it 700", "remove that").
-- **Log any meal, any time.** Breakfast, lunch, dinner, or a snack — text it and it's logged
-  toward your daily total. Give your own calorie count and it uses that; otherwise it estimates.
-- **Weekday lunch suggestion.** Each weekday (Mon–Fri, 11:50 SGT) it looks at your last few
-  days of meals, searches eateries near the office (Google Places), and suggests one option.
+- **Log meals over Telegram (confirm first).** Text what you ate ("chicken rice and kopi");
+  the bot estimates the calories and shows **✅ Confirm / ✖️ Cancel** — nothing is logged until
+  you confirm. Say "make it 700" to re-estimate before confirming. Works for any meal, any time;
+  give your own number and it uses that.
+- **Weekday lunch suggestion, one-tap to log.** Each weekday (Mon–Fri, 11:50 SGT) it looks at
+  your recent meals — steering lighter if you've been eating heavy — searches several cuisines
+  near the office (Google Places), and suggests one option with **✅ Ate it / 🔄 Suggest another**
+  buttons. Tap *Ate it* to log it without re-typing.
 - **Live dashboard on Vercel** (`GET /`) — a calorie dashboard + recent lunch picks, rendered
   from the current state on every request, so it's always up to date.
 

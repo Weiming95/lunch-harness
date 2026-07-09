@@ -30,8 +30,37 @@ WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
 
 
+def _handle_callback(cq):
+    """A button tap (✅ Confirm / ✖️ Cancel / ✅ Ate it / 🔄 Suggest another).
+    Handled deterministically — no model call needed for confirm/cancel."""
+    chat_id = str((cq.get("message") or {}).get("chat", {}).get("id", ""))
+    cid = cq.get("id", "")
+    if harness.TELEGRAM_CHAT_ID and chat_id != harness.TELEGRAM_CHAT_ID:
+        harness.answer_callback(cid)
+        return "ignored-chat"
+
+    data = (cq.get("data") or "").strip()
+    message_id = (cq.get("message") or {}).get("message_id")
+    if data == "confirm":
+        harness.confirm_pending()
+    elif data == "cancel":
+        harness.cancel_pending()
+    elif data == "another":
+        harness.suggest()  # proposes a fresh pick with its own buttons
+    else:
+        harness.answer_callback(cid, "Unknown action")
+        return f"callback:{data}:unknown"
+
+    harness.answer_callback(cid)
+    harness.remove_buttons(message_id)  # consume the buttons on the tapped message
+    return f"callback:{data}"
+
+
 def process_update(update):
     """Handle one Telegram update. State reads/writes go to Redis via harness."""
+    if update.get("callback_query"):
+        return _handle_callback(update["callback_query"])
+
     msg = update.get("message") or update.get("edited_message")
     if not msg or "text" not in msg:
         return "no-text"
@@ -42,11 +71,11 @@ def process_update(update):
     if not text:
         return "empty"
 
-    # Over a webhook the send_telegram tool call is the only channel back to the
-    # user; if the model answered with plain text, forward it ourselves.
+    # The agent decides: propose a meal, confirm/cancel a pending one, suggest a
+    # pick, or answer. If it produced no user-facing message, forward its text.
     messages = [harness._system_message()]
     reply = harness.converse(messages, text)
-    if not harness._last_telegram_text(messages):
+    if not harness._sent_during(messages):
         harness.send_telegram(reply or "Got it ✅")
     return "handled"
 

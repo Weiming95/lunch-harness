@@ -161,7 +161,11 @@ def _redis_set(key, value_str):
         return json.loads(r.read().decode())
 
 
-_LOCAL_PATHS = {"food_log": FOOD_LOG, "suggestions": SUGGESTIONS}
+_LOCAL_PATHS = {
+    "food_log": FOOD_LOG,
+    "suggestions": SUGGESTIONS,
+    "pending": os.path.join(DATA_DIR, "pending.json"),
+}
 
 
 def _store_get(key, default):
@@ -403,18 +407,47 @@ def delete_last_meal():
     return {"deleted": removed}
 
 
-def send_telegram(message):
-    """Send a plain-text message to the configured chat."""
+def send_telegram(message, buttons=None):
+    """Send a message to the configured chat. `buttons` is an optional list of
+    (label, callback_data) tuples rendered as a single row of inline buttons."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return {"status": "telegram not configured; message not sent", "message": message}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True}
+    if buttons:
+        payload["reply_markup"] = {
+            "inline_keyboard": [[{"text": t, "callback_data": d} for t, d in buttons]]
+        }
     try:
-        _post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True},
-        )
+        _post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", payload)
         return {"status": "sent"}
     except RuntimeError as e:
         return {"status": f"error: {e}"}
+
+
+def answer_callback(callback_id, text=""):
+    """Acknowledge a button tap so Telegram stops the loading spinner."""
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    try:
+        _post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+            {"callback_query_id": callback_id, "text": text},
+        )
+    except RuntimeError:
+        pass
+
+
+def remove_buttons(message_id):
+    """Strip the inline keyboard off a message (e.g. after it's been acted on)."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not message_id:
+        return
+    try:
+        _post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
+            {"chat_id": TELEGRAM_CHAT_ID, "message_id": message_id, "reply_markup": {"inline_keyboard": []}},
+        )
+    except RuntimeError:
+        pass
 
 
 def _infer_meal_type(dt):
@@ -426,6 +459,96 @@ def _infer_meal_type(dt):
     if h < 18:
         return "snack"
     return "dinner"
+
+
+# ---------------------------------------------------------------------------
+# Confirm workflow: a "pending" proposal (a meal or a lunch pick) waits in the
+# store until the user confirms (tap or "yes") or adjusts/cancels. Nothing hits
+# the food log until confirmed.
+# ---------------------------------------------------------------------------
+def load_pending():
+    return _store_get("pending", None)
+
+
+def save_pending(obj):
+    _store_set("pending", obj)
+
+
+def clear_pending():
+    _store_set("pending", None)
+
+
+def _today_total():
+    today = _today_sgt()
+    return sum(int(m.get("calories", 0)) for m in load_food_log() if m.get("date") == today)
+
+
+def propose_meal(description, calories, protein_g=None, meal_type=None, note=None):
+    """Propose logging a meal (DON'T log yet). Sends the estimate + Confirm/Cancel
+    buttons and stores it as pending. Use this instead of logging directly."""
+    calories = int(calories)
+    pending = {
+        "kind": "meal",
+        "description": str(description),
+        "calories": calories,
+        "protein_g": int(protein_g) if protein_g is not None else None,
+        "meal_type": meal_type or _infer_meal_type(_now_sgt()),
+    }
+    save_pending(pending)
+    macro = f", ~{int(protein_g)}g protein" if protein_g is not None else ""
+    projected = _today_total() + calories
+    msg = (f"{description} — I estimate ~{calories} kcal{macro}. "
+           f"That would put you at {projected} / {DAILY_CALORIE_TARGET} today.")
+    if note:
+        msg += f"\n{note}"
+    msg += "\n\nLog it?"
+    send_telegram(msg, buttons=[("✅ Confirm", "confirm"), ("✖️ Cancel", "cancel")])
+    return {"status": "proposed", "pending": pending}
+
+
+def propose_pick(place, dish, calories, note=None):
+    """Propose a lunch pick (DON'T log yet). Sends it with Ate-it / Suggest-another
+    buttons, stores it as pending, and records it so future picks stay varied."""
+    calories = int(calories)
+    desc = f"{dish} at {place}"
+    save_pending({"kind": "pick", "description": desc, "calories": calories,
+                  "protein_g": None, "meal_type": "lunch"})
+    # Record the pick for variety + the dashboard, even before it's confirmed.
+    suggestions = load_suggestions()
+    suggestions.append({"date": _today_sgt(), "pick": f"{desc} (~{calories} kcal)", "reason": note or ""})
+    save_suggestions(suggestions)
+    msg = f"🍴 Lunch pick: {dish} at {place} — ~{calories} kcal."
+    if note:
+        msg += f"\n{note}"
+    msg += "\n\nHad it?"
+    send_telegram(msg, buttons=[("✅ Ate it", "confirm"), ("🔄 Suggest another", "another")])
+    return {"status": "pick proposed"}
+
+
+def confirm_pending():
+    """Log the pending proposal to the food log and clear it. Call this when the
+    user confirms/accepts (e.g. says yes)."""
+    pending = load_pending()
+    if not pending:
+        send_telegram("Nothing to confirm right now — tell me what you ate and I'll estimate it.")
+        return {"status": "no pending"}
+    result = log_meal(pending["description"], pending["calories"],
+                      pending.get("protein_g"), pending.get("meal_type"))
+    clear_pending()
+    e = result["logged"]
+    total = result["today_calories"]
+    send_telegram(f"Logged {e['description']} — {e['calories']} kcal "
+                  f"({total} / {DAILY_CALORIE_TARGET} today). ✅")
+    return {"status": "logged", "logged": e, "today_calories": total}
+
+
+def cancel_pending():
+    """Discard the pending proposal without logging anything."""
+    if not load_pending():
+        return {"status": "nothing pending"}
+    clear_pending()
+    send_telegram("Okay — cancelled, nothing logged.")
+    return {"status": "cancelled"}
 
 
 TOOLS = [
@@ -469,18 +592,52 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "log_meal",
-            "description": "Log a meal the user just told you they ate. Estimate calories (and protein if you can) from the description.",
+            "name": "propose_meal",
+            "description": "Propose logging a meal the user reported — estimate its calories (and protein if you can) and present it for confirmation. This does NOT log yet; it shows the user Confirm/Cancel buttons. Use this for every meal the user mentions; also call it again with new numbers when they adjust ('make it 700').",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "description": {"type": "string", "description": "What was eaten, e.g. 'chicken rice and kopi'."},
-                    "calories": {"type": "integer", "description": "Estimated total calories."},
+                    "calories": {"type": "integer", "description": "Estimated total calories (use the user's number if they gave one)."},
                     "protein_g": {"type": "integer", "description": "Estimated protein in grams (optional)."},
                     "meal_type": {"type": "string", "description": "breakfast | lunch | snack | dinner (optional)."},
+                    "note": {"type": "string", "description": "Optional one-line note, e.g. a quick macro breakdown."},
                 },
                 "required": ["description", "calories"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_pick",
+            "description": "Propose ONE lunch pick to the user. Sends it with 'Ate it' / 'Suggest another' buttons so they can accept without re-typing. Use this to deliver every lunch suggestion (instead of send_telegram).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "place": {"type": "string", "description": "The eatery name."},
+                    "dish": {"type": "string", "description": "The specific dish/order to get."},
+                    "calories": {"type": "integer", "description": "Rough calorie estimate for that dish."},
+                    "note": {"type": "string", "description": "One line on why it fits (health/variety/calories)."},
+                },
+                "required": ["place", "dish", "calories"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confirm_pending",
+            "description": "Log the pending proposal (meal or lunch pick) to the food log. Call this when the user confirms or accepts it (e.g. 'yes', 'ate it', 'go ahead').",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_pending",
+            "description": "Discard the pending proposal without logging anything (e.g. user says 'no', 'cancel', 'didn't eat it').",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -524,11 +681,26 @@ DISPATCH = {
     "search_places": search_places,
     "read_recent_picks": read_recent_picks,
     "read_food_log": read_food_log,
-    "log_meal": log_meal,
+    "propose_meal": propose_meal,
+    "propose_pick": propose_pick,
+    "confirm_pending": confirm_pending,
+    "cancel_pending": cancel_pending,
     "update_last_meal": update_last_meal,
     "delete_last_meal": delete_last_meal,
     "send_telegram": send_telegram,
 }
+
+# Tools that deliver a message to the user (used to detect if we still owe a reply).
+SENDING_TOOLS = {"propose_meal", "propose_pick", "confirm_pending", "cancel_pending", "send_telegram"}
+
+
+def _sent_during(messages):
+    """True if any user-facing message was sent during this turn."""
+    for m in messages:
+        for tc in m.get("tool_calls") or []:
+            if tc["function"]["name"] in SENDING_TOOLS:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +717,16 @@ def _system_message():
         f"Daily calorie target: {DAILY_CALORIE_TARGET} kcal. "
         f"Office: 1 Depot Rd, Singapore."
     )
+    pending = load_pending()
+    if pending:
+        context += (
+            f"\n\n[pending {pending['kind']} awaiting the user's confirmation] "
+            f"\"{pending['description']}\" (~{pending['calories']} kcal). "
+            "If the user confirms/accepts (yes, ate it, go ahead), call confirm_pending. "
+            "If they adjust the meal (e.g. 'make it 700'), call propose_meal again with the new "
+            "values. If they want a different lunch pick, call propose_pick with a new option. "
+            "If they decline (no, cancel), call cancel_pending."
+        )
     return {"role": "system", "content": content + context}
 
 
@@ -736,8 +918,9 @@ def poll():
             continue
         print(f"> {text}")
         try:
-            reply = converse([_system_message()], text)
-            if reply:
+            msgs = [_system_message()]
+            reply = converse(msgs, text)
+            if not _sent_during(msgs) and reply:
                 send_telegram(reply)
                 print(f"< {reply}")
         except Exception as e:
@@ -758,11 +941,11 @@ SUGGEST_PROMPT = (
     "Steps: (1) read my food log for the last 3 days; (2) check read_recent_picks so you "
     "know what you've already suggested; (3) search a FEW different cuisines/dish types "
     "(e.g. salad, japanese, malay, thai, poke, sandwich, yong tau foo, korean) — NOT just "
-    "'healthy' — to build a varied set of nearby options. Then pick ONE spot + dish that is "
+    "'healthy' — to build a varied set of nearby options. Then choose ONE spot + dish that is "
     "reasonably healthy, fits my remaining calories, and is clearly DIFFERENT from what I've "
     "eaten or been suggested recently — rotate the place AND the cuisine, don't repeat a "
-    "recent pick. Send a short Telegram message: the pick, one line on why it fits, and a "
-    "rough calorie estimate."
+    "recent pick. Deliver it by calling propose_pick (place, dish, calories, note) — do NOT "
+    "use send_telegram — so I can accept it with one tap."
 )
 
 
@@ -790,19 +973,11 @@ def suggest():
     )
     messages = [_system_message()]
     reply = converse(messages, prompt)
-    # Guarantee delivery: if the model answered with plain text instead of calling
-    # send_telegram, send it ourselves — otherwise the daily pick never arrives.
-    sent_text = _last_telegram_text(messages)
-    if not sent_text and reply:
+    # propose_pick delivers the suggestion (buttoned message) and records it.
+    # Fallback only if the model somehow didn't send anything.
+    if not _sent_during(messages) and reply:
         send_telegram(reply)
-    # Record the actual suggestion so the dashboard + variety check can see it.
-    pick = (sent_text or reply or "").strip()
-    pick = pick.replace("\n", " ").strip()[:280] or "(sent via tool)"
-    suggestions = load_suggestions()
-    suggestions.append({"date": _today_sgt(), "pick": pick, "reason": ""})
-    save_suggestions(suggestions)
-    print(pick)
-    print("Suggestion recorded.")
+    print("Suggestion run complete.")
 
 
 # ---------------------------------------------------------------------------
