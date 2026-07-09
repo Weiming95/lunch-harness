@@ -544,7 +544,7 @@ def render_dashboard():
     html = f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lunch Harness — 1 Depot Rd</title>
+<title>Lunch Tracker</title>
 <style>
   :root {{ color-scheme: light dark; }}
   * {{ box-sizing: border-box; }}
@@ -575,7 +575,7 @@ def render_dashboard():
   .bv {{ font-size:.6rem; color:#aaa; }}
   ul {{ margin:.3rem 0; padding-left: 1.1rem; }} li {{ margin:.35rem 0; }}
 </style></head><body><div class="wrap">
-  <h1>🍱 Lunch Harness</h1>
+  <h1>🍱 Lunch Tracker</h1>
   <p class="sub">Calorie log &amp; lunch picks near 1 Depot Rd · updated {_esc(_now_sgt().strftime('%Y-%m-%d %H:%M'))} SGT</p>
 
   <div class="card">
