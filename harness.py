@@ -409,13 +409,14 @@ def delete_last_meal():
 
 def send_telegram(message, buttons=None):
     """Send a message to the configured chat. `buttons` is an optional list of
-    (label, callback_data) tuples rendered as a single row of inline buttons."""
+    rows, each row a list of (label, callback_data) tuples, rendered as an
+    inline keyboard."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return {"status": "telegram not configured; message not sent", "message": message}
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True}
     if buttons:
         payload["reply_markup"] = {
-            "inline_keyboard": [[{"text": t, "callback_data": d} for t, d in buttons]]
+            "inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in buttons]
         }
     try:
         _post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", payload)
@@ -502,7 +503,7 @@ def propose_meal(description, calories, protein_g=None, meal_type=None, note=Non
     if note:
         msg += f"\n{note}"
     msg += "\n\nLog it?"
-    send_telegram(msg, buttons=[("✅ Confirm", "confirm"), ("✖️ Cancel", "cancel")])
+    send_telegram(msg, buttons=[[("✅ Confirm", "confirm"), ("✖️ Cancel", "cancel")]])
     return {"status": "proposed", "pending": pending}
 
 
@@ -520,8 +521,11 @@ def propose_pick(place, dish, calories, note=None):
     msg = f"🍴 Lunch pick: {dish} at {place} — ~{calories} kcal."
     if note:
         msg += f"\n{note}"
-    msg += "\n\nHad it?"
-    send_telegram(msg, buttons=[("✅ Ate it", "confirm"), ("🔄 Suggest another", "another")])
+    msg += "\n\nHad it? (Or just tell me what you actually ate.)"
+    send_telegram(msg, buttons=[
+        [("✅ Ate it", "confirm"), ("🔄 Suggest another", "another")],
+        [("✍️ Ate something else", "other")],
+    ])
     return {"status": "pick proposed"}
 
 
@@ -723,8 +727,10 @@ def _system_message():
             f"\n\n[pending {pending['kind']} awaiting the user's confirmation] "
             f"\"{pending['description']}\" (~{pending['calories']} kcal). "
             "If the user confirms/accepts (yes, ate it, go ahead), call confirm_pending. "
-            "If they adjust the meal (e.g. 'make it 700'), call propose_meal again with the new "
-            "values. If they want a different lunch pick, call propose_pick with a new option. "
+            "If they adjust it (e.g. 'make it 700'), call propose_meal again with the new "
+            "values. If they tell you they actually ate something DIFFERENT (e.g. 'i had sushi "
+            "instead'), call propose_meal for what they really ate — that replaces this pending "
+            "item. If they want a different lunch pick, call propose_pick with a new option. "
             "If they decline (no, cancel), call cancel_pending."
         )
     return {"role": "system", "content": content + context}

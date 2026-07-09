@@ -47,6 +47,10 @@ def _handle_callback(cq):
         harness.cancel_pending()
     elif data == "another":
         harness.suggest()  # proposes a fresh pick with its own buttons
+    elif data == "other":
+        # User ate something other than the pick — drop it and let them type it.
+        harness.clear_pending()
+        harness.send_telegram("No problem — what did you have? Tell me and I'll log it.")
     else:
         harness.answer_callback(cid, "Unknown action")
         return f"callback:{data}:unknown"
