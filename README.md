@@ -12,8 +12,9 @@ text-in/text-out function*), different job.
   toward your daily total. Give your own calorie count and it uses that; otherwise it estimates.
 - **Weekday lunch suggestion.** Each weekday (Mon–Fri, 11:50 SGT) it looks at your last few
   days of meals, searches eateries near the office (Google Places), and suggests one option.
-- **Published to GitHub Pages.** A daily calorie dashboard + recent lunch picks, rendered to
-  `docs/index.html`.
+- **Live dashboard on Vercel** (`GET /`) — a calorie dashboard + recent lunch picks, rendered
+  from the current state on every request, so it's always up to date. Also mirrored to
+  **GitHub Pages** (`docs/index.html`) as a static, slightly-delayed secondary view.
 
 **Instant replies via a Telegram webhook.** A small Vercel Python function
 (`api/telegram.py`) receives each message the moment you send it and reuses `harness.py`
