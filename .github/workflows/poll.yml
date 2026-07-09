@@ -1,0 +1,44 @@
+name: poll-telegram
+
+# Drains new Telegram messages, logs/corrects meals via the agent, rebuilds the
+# dashboard, and commits state back to the repo (which is also the Pages source).
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 min (GitHub may batch/delay off-peak)
+  workflow_dispatch: {}
+
+# Avoid overlapping runs racing on the same JSON files / git push.
+concurrency:
+  group: lunch-harness-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Poll and log
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: ${{ secrets.OPENCODE_MODEL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+        run: python3 harness.py --poll
+      - name: Commit updated state
+        run: |
+          git config user.name "lunch-harness[bot]"
+          git config user.email "actions@github.com"
+          git add data docs
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: log/poll update [skip ci]"
+            git push
+          fi

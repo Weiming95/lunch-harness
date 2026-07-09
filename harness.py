@@ -1,0 +1,749 @@
+#!/usr/bin/env python3
+"""
+lunch-harness — a personal lunch suggester + calorie tracker in one file.
+
+Pivoted from https://github.com/Weiming95/hadr-harness : same idea (the harness
+is the loop, the tools, and the interface; the model is just a text-in/text-out
+function) but for lunch near 1 Depot Rd, Singapore.
+
+The model (OpenCode Go, OpenAI-compatible) drives a tool-calling loop. Tools let
+it search nearby places (Google Places API v1), read/append/correct a food log,
+and message the user on Telegram. State lives in ./data/*.json and is committed
+back to the repo by GitHub Actions, which also serves ./docs as GitHub Pages.
+
+Stdlib only — no pip installs.
+
+Modes:
+    python3 harness.py                 # interactive REPL (debug)
+    python3 harness.py --once "..."    # one-shot prompt (debug)
+    python3 harness.py --poll          # drain Telegram, log/correct meals, rebuild dashboard
+    python3 harness.py --suggest       # daily lunch suggestion run
+    python3 harness.py --dashboard     # just re-render docs/index.html from data
+    python3 harness.py --tg-updates    # print recent Telegram updates + chat ids
+    python3 harness.py --models        # list available models
+"""
+
+import json
+import math
+import os
+import sys
+import subprocess
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone, timedelta
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(ROOT, "data")
+DOCS_DIR = os.path.join(ROOT, "docs")
+FOOD_LOG = os.path.join(DATA_DIR, "food_log.json")
+SUGGESTIONS = os.path.join(DATA_DIR, "suggestions.json")
+TG_OFFSET = os.path.join(DATA_DIR, "tg_offset.json")
+SYSTEM_PROMPT_FILE = os.path.join(ROOT, "system_prompt.md")
+
+# Singapore is UTC+8 (no DST).
+SGT = timezone(timedelta(hours=8))
+
+# 1 Depot Road, Singapore 109679 (Defence Technology Tower A).
+OFFICE_LAT = 1.27930
+OFFICE_LNG = 103.81655
+SEARCH_RADIUS_M = 1500  # walking distance; results beyond this are dropped
+
+# ---------------------------------------------------------------------------
+# Config (env -> .env -> defaults), mirroring the reference harness.
+# ---------------------------------------------------------------------------
+def _load_dotenv():
+    path = os.path.join(ROOT, ".env")
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            os.environ.setdefault(key, val)
+
+
+_load_dotenv()
+
+
+def _read_api_key():
+    """OPENCODE_API_KEY from env, else macOS Keychain (generic password
+    'opencode-api-key'). Returns '' if unavailable."""
+    key = os.environ.get("OPENCODE_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", "opencode-api-key", "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+OPENCODE_BASE_URL = os.environ.get("OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1").rstrip("/")
+OPENCODE_MODEL = os.environ.get("OPENCODE_MODEL", "kimi-k2")
+OPENCODE_API_KEY = _read_api_key()
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "").strip()
+
+DAILY_CALORIE_TARGET = int(os.environ.get("DAILY_CALORIE_TARGET", "2100"))
+
+MAX_TOOL_ITERS = 8
+
+
+# ---------------------------------------------------------------------------
+# Small JSON store helpers
+# ---------------------------------------------------------------------------
+def _read_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def _write_json(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def _now_sgt():
+    return datetime.now(SGT)
+
+
+def _today_sgt():
+    return _now_sgt().strftime("%Y-%m-%d")
+
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
+def _post(url, payload, headers=None):
+    data = json.dumps(payload).encode()
+    hdrs = {"Content-Type": "application/json", "User-Agent": "lunch-harness/1.0"}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise RuntimeError(f"HTTP {e.code} from {url}: {body}") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Network error calling {url}: {e}") from None
+
+
+def _get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "lunch-harness/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode())
+
+
+# ---------------------------------------------------------------------------
+# Model call (OpenAI-compatible chat/completions with tools)
+# ---------------------------------------------------------------------------
+def call_model(messages):
+    if not OPENCODE_API_KEY:
+        raise RuntimeError("OPENCODE_API_KEY is not set (env, .env, or Keychain).")
+    # NB: the Console Go provider 400s when `temperature` is sent alongside
+    # `tools` for these models, so we omit it and take the model default.
+    payload = {
+        "model": OPENCODE_MODEL,
+        "messages": messages,
+        "tools": TOOLS,
+        "max_tokens": 2048,
+    }
+    resp = _post(
+        f"{OPENCODE_BASE_URL}/chat/completions",
+        payload,
+        headers={"Authorization": f"Bearer {OPENCODE_API_KEY}"},
+    )
+    return resp["choices"][0]["message"]
+
+
+def list_models():
+    try:
+        resp = _get(f"{OPENCODE_BASE_URL}/models")
+        for m in resp.get("data", resp if isinstance(resp, list) else []):
+            print(m.get("id", m))
+    except Exception as e:
+        print(f"Could not list models: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+_PRICE_LABELS = {
+    "PRICE_LEVEL_FREE": "free",
+    "PRICE_LEVEL_INEXPENSIVE": "$",
+    "PRICE_LEVEL_MODERATE": "$$",
+    "PRICE_LEVEL_EXPENSIVE": "$$$",
+    "PRICE_LEVEL_VERY_EXPENSIVE": "$$$$",
+}
+
+
+def _haversine_m(lat1, lng1, lat2, lng2):
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def search_places(keyword="lunch", max_results=8):
+    """Find eateries within walking distance of the office via Google Places
+    API v1 (searchText). Text Search's locationRestriction only supports
+    rectangles, so we bias to a circle, then hard-filter by real distance and
+    sort nearest-first — keeping results actually walkable from 1 Depot Rd."""
+    if not GOOGLE_PLACES_API_KEY:
+        return {"error": "GOOGLE_PLACES_API_KEY not set."}
+    max_results = max(1, min(int(max_results or 8), 15))
+    payload = {
+        "textQuery": f"{keyword} restaurants",
+        "maxResultCount": 20,  # over-fetch; we filter by distance below
+        "locationBias": {
+            "circle": {
+                "center": {"latitude": OFFICE_LAT, "longitude": OFFICE_LNG},
+                "radius": float(SEARCH_RADIUS_M),
+            }
+        },
+    }
+    field_mask = ",".join([
+        "places.displayName",
+        "places.location",
+        "places.rating",
+        "places.userRatingCount",
+        "places.priceLevel",
+        "places.primaryTypeDisplayName",
+        "places.editorialSummary",
+        "places.formattedAddress",
+    ])
+    try:
+        resp = _post(
+            "https://places.googleapis.com/v1/places:searchText",
+            payload,
+            headers={
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask": field_mask,
+            },
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    results = []
+    for p in resp.get("places", []):
+        loc = p.get("location") or {}
+        lat, lng = loc.get("latitude"), loc.get("longitude")
+        if lat is None or lng is None:
+            continue
+        dist = round(_haversine_m(OFFICE_LAT, OFFICE_LNG, lat, lng))
+        if dist > SEARCH_RADIUS_M:
+            continue
+        results.append({
+            "name": p.get("displayName", {}).get("text", "?"),
+            "type": p.get("primaryTypeDisplayName", {}).get("text", ""),
+            "rating": p.get("rating"),
+            "ratings_count": p.get("userRatingCount"),
+            "price": _PRICE_LABELS.get(p.get("priceLevel", ""), ""),
+            "summary": p.get("editorialSummary", {}).get("text", ""),
+            "address": p.get("formattedAddress", ""),
+            "distance_m": dist,
+        })
+    results.sort(key=lambda r: r["distance_m"])
+    return {"query": keyword, "count": len(results), "places": results[:max_results]}
+
+
+def read_food_log(days=3):
+    """Return meals logged in the last `days` days (SGT), plus today's total."""
+    days = max(1, min(int(days or 3), 30))
+    log = _read_json(FOOD_LOG, [])
+    cutoff = (_now_sgt() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    recent = [m for m in log if m.get("date", "") >= cutoff]
+    today = _today_sgt()
+    today_cals = sum(int(m.get("calories", 0)) for m in log if m.get("date") == today)
+    return {
+        "days": days,
+        "today": today,
+        "today_calories": today_cals,
+        "daily_target": DAILY_CALORIE_TARGET,
+        "meals": recent,
+    }
+
+
+def log_meal(description, calories, protein_g=None, meal_type=None):
+    """Append a meal to the food log (dated now, SGT)."""
+    log = _read_json(FOOD_LOG, [])
+    now = _now_sgt()
+    entry = {
+        "id": (log[-1]["id"] + 1) if log else 1,
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M"),
+        "description": str(description),
+        "calories": int(calories),
+        "protein_g": int(protein_g) if protein_g is not None else None,
+        "meal_type": meal_type or _infer_meal_type(now),
+    }
+    log.append(entry)
+    _write_json(FOOD_LOG, log)
+    today_cals = sum(int(m.get("calories", 0)) for m in log if m.get("date") == entry["date"])
+    return {"logged": entry, "today_calories": today_cals, "daily_target": DAILY_CALORIE_TARGET}
+
+
+def update_last_meal(calories=None, description=None, protein_g=None):
+    """Correct the most recently logged meal."""
+    log = _read_json(FOOD_LOG, [])
+    if not log:
+        return {"error": "food log is empty; nothing to update."}
+    entry = log[-1]
+    if calories is not None:
+        entry["calories"] = int(calories)
+    if description is not None:
+        entry["description"] = str(description)
+    if protein_g is not None:
+        entry["protein_g"] = int(protein_g)
+    _write_json(FOOD_LOG, log)
+    today_cals = sum(int(m.get("calories", 0)) for m in log if m.get("date") == entry["date"])
+    return {"updated": entry, "today_calories": today_cals}
+
+
+def delete_last_meal():
+    """Remove the most recently logged meal."""
+    log = _read_json(FOOD_LOG, [])
+    if not log:
+        return {"error": "food log is empty; nothing to delete."}
+    removed = log.pop()
+    _write_json(FOOD_LOG, log)
+    return {"deleted": removed}
+
+
+def send_telegram(message):
+    """Send a plain-text message to the configured chat."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return {"status": "telegram not configured; message not sent", "message": message}
+    try:
+        _post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            {"chat_id": TELEGRAM_CHAT_ID, "text": message, "disable_web_page_preview": True},
+        )
+        return {"status": "sent"}
+    except RuntimeError as e:
+        return {"status": f"error: {e}"}
+
+
+def _infer_meal_type(dt):
+    h = dt.hour
+    if h < 11:
+        return "breakfast"
+    if h < 15:
+        return "lunch"
+    if h < 18:
+        return "snack"
+    return "dinner"
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_places",
+            "description": "Search for eateries near the office (1 Depot Rd, Singapore) using Google Places. Use for lunch suggestions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string", "description": "Cuisine or dish, e.g. 'healthy', 'japanese', 'salad', 'chicken rice'."},
+                    "max_results": {"type": "integer", "description": "How many places to return (1-15)."},
+                },
+                "required": ["keyword"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_food_log",
+            "description": "Read meals logged over the last N days, plus today's calorie total and the daily target. Use before suggesting lunch or judging how the day is going.",
+            "parameters": {
+                "type": "object",
+                "properties": {"days": {"type": "integer", "description": "Look-back window in days (default 3)."}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "log_meal",
+            "description": "Log a meal the user just told you they ate. Estimate calories (and protein if you can) from the description.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "What was eaten, e.g. 'chicken rice and kopi'."},
+                    "calories": {"type": "integer", "description": "Estimated total calories."},
+                    "protein_g": {"type": "integer", "description": "Estimated protein in grams (optional)."},
+                    "meal_type": {"type": "string", "description": "breakfast | lunch | snack | dinner (optional)."},
+                },
+                "required": ["description", "calories"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_last_meal",
+            "description": "Correct the most recently logged meal when the user adjusts it (e.g. 'make it 700' or fixes the description).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "calories": {"type": "integer"},
+                    "description": {"type": "string"},
+                    "protein_g": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_last_meal",
+            "description": "Delete the most recently logged meal (e.g. user says 'remove that' or 'I didn't eat it').",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_telegram",
+            "description": "Send a concise plain-text reply to the user on Telegram.",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string"}},
+                "required": ["message"],
+            },
+        },
+    },
+]
+
+DISPATCH = {
+    "search_places": search_places,
+    "read_food_log": read_food_log,
+    "log_meal": log_meal,
+    "update_last_meal": update_last_meal,
+    "delete_last_meal": delete_last_meal,
+    "send_telegram": send_telegram,
+}
+
+
+# ---------------------------------------------------------------------------
+# Agent loop
+# ---------------------------------------------------------------------------
+def _system_message():
+    try:
+        with open(SYSTEM_PROMPT_FILE) as f:
+            content = f.read()
+    except FileNotFoundError:
+        content = "You are a helpful lunch and calorie assistant."
+    context = (
+        f"\n\n[runtime context] Today is {_today_sgt()} (SGT). "
+        f"Daily calorie target: {DAILY_CALORIE_TARGET} kcal. "
+        f"Office: 1 Depot Rd, Singapore."
+    )
+    return {"role": "system", "content": content + context}
+
+
+def converse(messages, user_text):
+    """Level-4 loop: keep running tools until the model stops requesting them.
+    Returns the final assistant text (may be empty if it only used tools)."""
+    messages.append({"role": "user", "content": user_text})
+    final_text = ""
+    for _ in range(MAX_TOOL_ITERS):
+        msg = call_model(messages)
+        messages.append(msg)
+        if msg.get("content"):
+            final_text = msg["content"]
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            break
+        for tc in tool_calls:
+            name = tc["function"]["name"]
+            try:
+                args = json.loads(tc["function"].get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            fn = DISPATCH.get(name)
+            try:
+                result = fn(**args) if fn else {"error": f"unknown tool {name}"}
+            except Exception as e:
+                result = {"error": f"{type(e).__name__}: {e}"}
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id", name),
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+    return final_text
+
+
+# ---------------------------------------------------------------------------
+# Dashboard renderer (deterministic; not LLM-driven)
+# ---------------------------------------------------------------------------
+def _esc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def render_dashboard():
+    log = _read_json(FOOD_LOG, [])
+    suggestions = _read_json(SUGGESTIONS, [])
+    today = _today_sgt()
+
+    today_meals = [m for m in log if m.get("date") == today]
+    today_cals = sum(int(m.get("calories", 0)) for m in today_meals)
+    pct = min(100, round(today_cals / DAILY_CALORIE_TARGET * 100)) if DAILY_CALORIE_TARGET else 0
+    over = today_cals > DAILY_CALORIE_TARGET
+
+    # Last 7 days totals for a simple bar chart.
+    daily = {}
+    for m in log:
+        daily[m.get("date", "?")] = daily.get(m.get("date", "?"), 0) + int(m.get("calories", 0))
+    last7 = []
+    for i in range(6, -1, -1):
+        d = (_now_sgt() - timedelta(days=i)).strftime("%Y-%m-%d")
+        last7.append((d, daily.get(d, 0)))
+    max_cal = max([c for _, c in last7] + [DAILY_CALORIE_TARGET, 1])
+
+    meal_rows = "".join(
+        f"<tr><td>{_esc(m.get('time',''))}</td><td>{_esc(m.get('meal_type',''))}</td>"
+        f"<td>{_esc(m.get('description',''))}</td><td class='num'>{int(m.get('calories',0))}</td></tr>"
+        for m in today_meals
+    ) or "<tr><td colspan='4' class='muted'>Nothing logged yet today.</td></tr>"
+
+    bars = "".join(
+        f"<div class='bar'><div class='fill{' over' if c>DAILY_CALORIE_TARGET else ''}' "
+        f"style='height:{round(c/max_cal*100)}%'></div>"
+        f"<span class='bl'>{d[5:]}</span><span class='bv'>{c}</span></div>"
+        for d, c in last7
+    )
+
+    sugg_rows = "".join(
+        f"<li><b>{_esc(s.get('date',''))}</b> — {_esc(s.get('pick',''))}"
+        + (f" <span class='muted'>· {_esc(s.get('reason',''))}</span>" if s.get('reason') else "")
+        + "</li>"
+        for s in reversed(suggestions[-10:])
+    ) or "<li class='muted'>No suggestions yet.</li>"
+
+    html = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lunch Harness — 1 Depot Rd</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  * {{ box-sizing: border-box; }}
+  body {{ font: 16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         margin: 0; padding: 2rem 1rem; background: #f6f7f9; color: #1a1a2e; }}
+  @media (prefers-color-scheme: dark) {{ body {{ background:#12131a; color:#e8e8ef; }}
+    .card {{ background:#1c1e28 !important; }} th {{ border-color:#333 !important; }}
+    td {{ border-color:#2a2c38 !important; }} }}
+  .wrap {{ max-width: 760px; margin: 0 auto; }}
+  h1 {{ font-size: 1.4rem; margin: 0 0 .25rem; }}
+  .sub {{ color: #888; margin: 0 0 1.5rem; font-size: .9rem; }}
+  .card {{ background: #fff; border-radius: 14px; padding: 1.25rem; margin-bottom: 1.25rem;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); }}
+  .total {{ font-size: 2.4rem; font-weight: 700; }}
+  .total small {{ font-size: 1rem; font-weight: 400; color:#888; }}
+  .meter {{ height: 10px; border-radius: 6px; background: #e6e8ee; overflow: hidden; margin:.6rem 0 .2rem; }}
+  .meter > i {{ display:block; height:100%; background:{'#e5484d' if over else '#30a46c'}; width:{pct}%; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th,td {{ text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #eee; }}
+  th {{ font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color:#888; }}
+  .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .muted {{ color: #999; }}
+  .chart {{ display: flex; gap: .5rem; align-items: flex-end; height: 140px; }}
+  .bar {{ flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; height:100%; position:relative; }}
+  .fill {{ width: 70%; background:#30a46c; border-radius:4px 4px 0 0; min-height:2px; }}
+  .fill.over {{ background:#e5484d; }}
+  .bl {{ font-size:.65rem; color:#888; margin-top:.3rem; }}
+  .bv {{ font-size:.6rem; color:#aaa; }}
+  ul {{ margin:.3rem 0; padding-left: 1.1rem; }} li {{ margin:.35rem 0; }}
+</style></head><body><div class="wrap">
+  <h1>🍱 Lunch Harness</h1>
+  <p class="sub">Calorie log &amp; lunch picks near 1 Depot Rd · updated {_esc(_now_sgt().strftime('%Y-%m-%d %H:%M'))} SGT</p>
+
+  <div class="card">
+    <div class="total">{today_cals} <small>/ {DAILY_CALORIE_TARGET} kcal today</small></div>
+    <div class="meter"><i></i></div>
+    <div class="muted">{pct}% of target{' · over target' if over else ''}</div>
+    <table style="margin-top:1rem">
+      <tr><th>Time</th><th>Meal</th><th>What</th><th class="num">kcal</th></tr>
+      {meal_rows}
+    </table>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 .8rem">Last 7 days</h3>
+    <div class="chart">{bars}</div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 .5rem">Recent lunch suggestions</h3>
+    <ul>{sugg_rows}</ul>
+  </div>
+</div></body></html>
+"""
+    os.makedirs(DOCS_DIR, exist_ok=True)
+    with open(os.path.join(DOCS_DIR, "index.html"), "w") as f:
+        f.write(html)
+    return os.path.join(DOCS_DIR, "index.html")
+
+
+# ---------------------------------------------------------------------------
+# Telegram polling
+# ---------------------------------------------------------------------------
+def _tg_get_updates(offset=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?timeout=0"
+    if offset:
+        url += f"&offset={offset}"
+    return _get(url)
+
+
+def poll():
+    """Drain new Telegram messages; run the agent on each; rebuild dashboard."""
+    if not TELEGRAM_BOT_TOKEN:
+        print("TELEGRAM_BOT_TOKEN not set; nothing to poll.")
+        return
+    state = _read_json(TG_OFFSET, {"offset": 0})
+    offset = state.get("offset", 0)
+    resp = _tg_get_updates(offset + 1 if offset else None)
+    updates = resp.get("result", [])
+    if not updates:
+        print("No new messages.")
+        render_dashboard()
+        return
+
+    handled = 0
+    for u in updates:
+        offset = max(offset, u["update_id"])
+        msg = u.get("message") or u.get("edited_message")
+        if not msg or "text" not in msg:
+            continue
+        text = msg["text"].strip()
+        chat_id = str(msg["chat"]["id"])
+        # Only act on the configured chat (ignore strangers).
+        if TELEGRAM_CHAT_ID and chat_id != TELEGRAM_CHAT_ID:
+            print(f"Ignoring message from chat {chat_id}")
+            continue
+        print(f"> {text}")
+        try:
+            reply = converse([_system_message()], text)
+            if reply:
+                send_telegram(reply)
+                print(f"< {reply}")
+        except Exception as e:
+            print(f"Error handling message: {e}")
+            send_telegram("Sorry, I hit an error handling that. Try again in a bit.")
+        handled += 1
+
+    _write_json(TG_OFFSET, {"offset": offset})
+    render_dashboard()
+    print(f"Handled {handled} message(s). Offset now {offset}.")
+
+
+# ---------------------------------------------------------------------------
+# Daily lunch suggestion
+# ---------------------------------------------------------------------------
+SUGGEST_PROMPT = (
+    "It's late morning — suggest ONE lunch option near the office for me. "
+    "First read my food log for the last 3 days, then search nearby places, "
+    "then pick a single spot + rough dish that balances what I've eaten recently "
+    "and my daily target (avoid repeating heavy/fried meals from the last day or two). "
+    "Send me a short Telegram message: the pick, why it fits, and a rough calorie estimate."
+)
+
+
+def suggest():
+    messages = [_system_message()]
+    reply = converse(messages, SUGGEST_PROMPT)
+    # Record the suggestion for the Pages log. Try to extract a short pick line.
+    pick = (reply or "").strip().split("\n")[0][:200] if reply else "(sent via tool)"
+    suggestions = _read_json(SUGGESTIONS, [])
+    suggestions.append({"date": _today_sgt(), "pick": pick, "reason": ""})
+    _write_json(SUGGESTIONS, suggestions)
+    if reply:
+        # converse may already have sent via tool; only send here if it returned
+        # plain text and didn't call send_telegram. We keep it simple and rely on
+        # the system prompt telling the model to use send_telegram.
+        print(reply)
+    render_dashboard()
+    print("Suggestion recorded.")
+
+
+# ---------------------------------------------------------------------------
+# Debug helpers
+# ---------------------------------------------------------------------------
+def tg_updates():
+    if not TELEGRAM_BOT_TOKEN:
+        print("TELEGRAM_BOT_TOKEN not set.")
+        return
+    resp = _tg_get_updates()
+    for u in resp.get("result", []):
+        m = u.get("message") or {}
+        chat = m.get("chat", {})
+        print(f"update_id={u['update_id']} chat_id={chat.get('id')} "
+              f"name={chat.get('first_name','')} text={m.get('text','')!r}")
+
+
+def run_once(prompt):
+    reply = converse([_system_message()], prompt)
+    print(reply or "(no text; model used tools only)")
+    render_dashboard()
+
+
+def repl():
+    messages = [_system_message()]
+    print("lunch-harness REPL. Ctrl-C to quit.")
+    while True:
+        try:
+            text = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not text:
+            continue
+        reply = converse(messages, text)
+        print(f"bot> {reply or '(used tools only)'}")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+def main():
+    args = sys.argv[1:]
+    if not args:
+        repl()
+    elif args[0] == "--poll":
+        poll()
+    elif args[0] == "--suggest":
+        suggest()
+    elif args[0] == "--dashboard":
+        print("Wrote", render_dashboard())
+    elif args[0] == "--tg-updates":
+        tg_updates()
+    elif args[0] == "--models":
+        list_models()
+    elif args[0] == "--once":
+        run_once(args[1] if len(args) > 1 else "Suggest me a healthy lunch near the office.")
+    else:
+        print(__doc__)
+
+
+if __name__ == "__main__":
+    main()

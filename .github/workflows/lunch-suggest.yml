@@ -1,0 +1,42 @@
+name: lunch-suggest
+
+# Daily late-morning lunch suggestion near 1 Depot Rd, informed by recent meals.
+on:
+  schedule:
+    - cron: "45 2 * * *" # 02:45 UTC = 10:45 SGT
+  workflow_dispatch: {}
+
+concurrency:
+  group: lunch-harness-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  suggest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Suggest lunch
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: ${{ secrets.OPENCODE_MODEL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+        run: python3 harness.py --suggest
+      - name: Commit updated state
+        run: |
+          git config user.name "lunch-harness[bot]"
+          git config user.email "actions@github.com"
+          git add data docs
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: daily lunch suggestion [skip ci]"
+            git push
+          fi
